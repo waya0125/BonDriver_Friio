@@ -26,6 +26,8 @@ struct Config {
     int device_index = 0;
     bool enable_b25 = true;
     bool no_settle = false;
+    std::wstring firmware_path;
+    uint16_t firmware_index = 0x5399;
 };
 
 class BonDriverFriio : public IBonDriver2 {

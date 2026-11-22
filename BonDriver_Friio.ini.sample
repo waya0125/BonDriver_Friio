@@ -11,3 +11,8 @@ EnableB25=1
 
 ; 選局直後の安定化フィルター（Settler）を無効化する場合は 1
 NoSettle=0
+
+; QRS-UT100B 自動ファームウェア転送用（省略時は DLL と同じフォルダの asv5211-firmware.bin）
+; FirmwarePath=asv5211-firmware.bin
+; 起動アドレス（通常版 0x5399 = 21401、forNetbook 版 0x53e4 = 21476）
+FirmwareIndex=21401

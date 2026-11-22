@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <thread>
 
 namespace friio {
@@ -64,6 +65,52 @@ std::vector<uint8_t> FrameT1(const std::vector<uint8_t>& block) {
 }
 
 } // namespace
+
+bool Ut100bDevice::LoadFirmwareIfNeeded(const std::wstring& fw_path, uint16_t start_index) {
+    auto cold_paths = WinUsbDevice::Enumerate(kUt100bColdVid, kUt100bColdPid);
+    if (cold_paths.empty()) return false;
+
+    std::ifstream ifs(fw_path.c_str(), std::ios::binary);
+    if (!ifs) return false;
+    std::vector<uint8_t> image((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (image.size() != 0x4000) return false;
+
+    struct Seg { uint16_t offset; uint16_t length; uint8_t req; };
+    constexpr Seg kSegs[] = {
+        {0x0000, 0x0c00, 0xab},
+        {0x2000, 0x0400, 0xab},
+        {0x2800, 0x1000, 0xab},
+        {0x3800, 0x0800, 0xac},
+    };
+
+    bool sent_any = false;
+    for (const auto& p : cold_paths) {
+        WinUsbDevice cold;
+        if (!cold.Open(p)) continue;
+        bool ok = true;
+        for (const auto& s : kSegs) {
+            size_t got = 0;
+            if (!cold.ControlTransfer(0x40, s.req, s.offset, start_index,
+                                      image.data() + s.offset, s.length, 1000, &got) || got != s.length) {
+                ok = false;
+                break;
+            }
+        }
+        cold.Close();
+        if (ok) sent_any = true;
+    }
+    if (!sent_any) return false;
+
+    // 3275:7020 として再列挙されるまで最大 5 秒待機
+    for (int i = 0; i < 25; ++i) {
+        SleepMs(200);
+        if (!WinUsbDevice::Enumerate(kUt100bVid, kUt100bPid).empty()) {
+            SleepMs(300);
+            return true;
+        }
+    }
+    return false;
+}
 
 bool Ut100bDevice::Open(int device_index) {
     auto paths = WinUsbDevice::Enumerate(kUt100bVid, kUt100bPid);

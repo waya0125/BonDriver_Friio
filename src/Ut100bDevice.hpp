@@ -15,11 +15,16 @@ namespace friio {
 
 constexpr uint16_t kUt100bVid = 0x3275;
 constexpr uint16_t kUt100bPid = 0x7020;
+constexpr uint16_t kUt100bColdVid = 0x1738;
+constexpr uint16_t kUt100bColdPid = 0x5211;
 
 class Ut100bDevice {
 public:
     Ut100bDevice() = default;
     ~Ut100bDevice() { Close(); }
+
+    // 未初期化 UT100B (1738:5211) が見つかった場合、ファームを転送して 3275:7020 への再列挙を待つ
+    static bool LoadFirmwareIfNeeded(const std::wstring& fw_path, uint16_t start_index = 0x5399);
 
     bool Open(int device_index);
     bool Init();

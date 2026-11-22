@@ -51,6 +51,18 @@ void BonDriverFriio::LoadIni(HMODULE module) {
     cfg_.device_index = GetPrivateProfileIntW(L"FRIIO", L"DeviceIndex", 0, ini.c_str());
     cfg_.enable_b25 = GetPrivateProfileIntW(L"FRIIO", L"EnableB25", 1, ini.c_str()) != 0;
     cfg_.no_settle = GetPrivateProfileIntW(L"FRIIO", L"NoSettle", 0, ini.c_str()) != 0;
+    cfg_.firmware_index = static_cast<uint16_t>(GetPrivateProfileIntW(L"FRIIO", L"FirmwareIndex", 0x5399, ini.c_str()));
+
+    std::wstring default_fw(path);
+    const size_t slash = default_fw.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        default_fw = default_fw.substr(0, slash + 1) + L"asv5211-firmware.bin";
+    } else {
+        default_fw = L"asv5211-firmware.bin";
+    }
+    wchar_t fw_buf[MAX_PATH]{};
+    GetPrivateProfileStringW(L"FRIIO", L"FirmwarePath", default_fw.c_str(), fw_buf, MAX_PATH, ini.c_str());
+    cfg_.firmware_path = fw_buf;
 }
 
 const BOOL BonDriverFriio::OpenTuner(void) {
@@ -59,23 +71,29 @@ const BOOL BonDriverFriio::OpenTuner(void) {
     bool try_ut = (cfg_.model == Model::Auto || cfg_.model == Model::Ut100b);
     bool try_u3s = (cfg_.model == Model::Auto || cfg_.model == Model::Mtvu3s);
 
-    if (try_ut && ut100b_.Open(cfg_.device_index)) {
-        if (ut100b_.Init()) {
-            active_model_ = Model::Ut100b;
-            tuner_name_ = L"BonDriver_Friio (QRS-UT100B)";
-            b25_active_ = false;
-            if (cfg_.enable_b25) {
-                dyna::BcasTransport tr;
-                tr.reset = [this]() { return ut100b_.ResetBcas(); };
-                tr.transmit = [this](const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp) {
-                    return ut100b_.TransmitBcas(apdu, len, resp);
-                };
-                b25_active_ = b25_.Init(std::move(tr), 4);
-            }
-            is_open_ = true;
-            return TRUE;
+    if (try_ut) {
+        bool opened = ut100b_.Open(cfg_.device_index);
+        if (!opened && Ut100bDevice::LoadFirmwareIfNeeded(cfg_.firmware_path, cfg_.firmware_index)) {
+            opened = ut100b_.Open(cfg_.device_index);
         }
-        ut100b_.Close();
+        if (opened) {
+            if (ut100b_.Init()) {
+                active_model_ = Model::Ut100b;
+                tuner_name_ = L"BonDriver_Friio (QRS-UT100B)";
+                b25_active_ = false;
+                if (cfg_.enable_b25) {
+                    dyna::BcasTransport tr;
+                    tr.reset = [this]() { return ut100b_.ResetBcas(); };
+                    tr.transmit = [this](const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp) {
+                        return ut100b_.TransmitBcas(apdu, len, resp);
+                    };
+                    b25_active_ = b25_.Init(std::move(tr), 4);
+                }
+                is_open_ = true;
+                return TRUE;
+            }
+            ut100b_.Close();
+        }
     }
 
     if (try_u3s && u3s_.Open(cfg_.device_index)) {
