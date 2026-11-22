@@ -158,7 +158,7 @@ void Mtvu3sDevice::Idle() {
 
 void Mtvu3sDevice::DescramblePacket(uint8_t pkt[188]) const {
     for (int b = 0; b < 11; ++b) {
-        aes_.decryptBlock(pkt + 12 + b * 16, pkt + 12 + b * 16);
+        aes_.decryptBlock(pkt + 12 + b * 16);
     }
 }
 
