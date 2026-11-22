@@ -74,8 +74,8 @@ bool Mtvu3sDevice::Open(int device_index) {
     bus_ = std::make_unique<Em28178Bus>(this);
     ter_ = std::make_unique<Tc90522>(*bus_, 0x20);
     sat_ = std::make_unique<Tc90522>(*bus_, 0x22);
-    ter_tuner_ = std::make_unique<Fc0013>(ter_->repeater(), 0xc6);
-    sat_tuner_ = std::make_unique<Qm1d1c0042>(sat_->repeater(), 0xc0);
+    ter_tuner_ = std::make_unique<Fc0013>(ter_->tunerBus(), 0xc6);
+    sat_tuner_ = std::make_unique<Qm1d1c0042>(sat_->tunerBus(), 0xc0);
     const uint8_t zero_key[16]{};
     aes_.setKey(zero_key);
     return true;
@@ -125,29 +125,16 @@ bool Mtvu3sDevice::TuneSat(uint32_t freq_khz, uint16_t tsid) {
     sat_tuner_->tune(freq_khz);
     sat_->resetSat();
     waitUntil([this]() { return sat_->isSatTmccLocked(); }, 30, 100);
-
-    std::vector<uint16_t> ids;
-    waitUntil([&]() {
-        ids = sat_->readSatTmccTsids();
-        for (uint16_t id : ids) {
-            if (id < 0xfff0) return true;
-        }
-        return false;
-    }, 30, 100);
-
-    uint16_t want = tsid;
-    if (!MatchTSID(tsid, ids, want)) return false;
-    sat_->selectSatTsid(want);
+    sat_->selectSatTsid(tsid);
     waitUntil([this]() { return sat_->isSatSlotLocked(); }, 30, 100);
     return true;
 }
 
 bool Mtvu3sDevice::GetCNR(float& cnr_db) {
-    uint32_t raw = 0;
     if (band_ == Band::UHF) {
-        cnr_db = static_cast<float>(ter_->readTerCnr(&raw));
+        cnr_db = ter_->getTerCnr();
     } else {
-        cnr_db = static_cast<float>(sat_->readSatCnr(&raw));
+        cnr_db = sat_->getSatCnr();
     }
     return true;
 }

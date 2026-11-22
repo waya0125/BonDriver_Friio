@@ -63,7 +63,7 @@ private:
     std::unique_ptr<Tc90522> sat_;
     std::unique_ptr<Fc0013> ter_tuner_;
     std::unique_ptr<Qm1d1c0042> sat_tuner_;
-    Aes128Ecb aes_;
+    Aes128EcbDecryptor aes_;
     Band band_ = Band::UHF;
 };
 
