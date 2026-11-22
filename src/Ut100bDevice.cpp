@@ -67,12 +67,17 @@ std::vector<uint8_t> FrameT1(const std::vector<uint8_t>& block) {
 
 bool Ut100bDevice::Open(int device_index) {
     auto paths = WinUsbDevice::Enumerate(kUt100bVid, kUt100bPid);
-    if (paths.empty() || device_index < 0 || static_cast<size_t>(device_index) >= paths.size()) {
-        return false;
+    int matched = 0;
+    for (const auto& p : paths) {
+        if (!usb_.Open(p)) continue;
+        if (matched == device_index) {
+            usb_.SetAlternateSetting(0);
+            return true;
+        }
+        usb_.Close();
+        ++matched;
     }
-    if (!usb_.Open(paths[static_cast<size_t>(device_index)])) return false;
-    usb_.SetAlternateSetting(0);
-    return true;
+    return false;
 }
 
 bool Ut100bDevice::Send(uint8_t req, uint16_t val, uint16_t idx, std::vector<uint8_t>& out, uint16_t len) {

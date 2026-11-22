@@ -65,10 +65,18 @@ bool Mtvu3sDevice::ReadReg(uint8_t reg, uint8_t& val) {
 
 bool Mtvu3sDevice::Open(int device_index) {
     auto paths = WinUsbDevice::Enumerate(kMtvu3sVid, kMtvu3sPid);
-    if (paths.empty() || device_index < 0 || static_cast<size_t>(device_index) >= paths.size()) {
-        return false;
+    int matched = 0;
+    bool opened = false;
+    for (const auto& p : paths) {
+        if (!usb_.Open(p)) continue;
+        if (matched == device_index) {
+            opened = true;
+            break;
+        }
+        usb_.Close();
+        ++matched;
     }
-    if (!usb_.Open(paths[static_cast<size_t>(device_index)])) return false;
+    if (!opened) return false;
     usb_.SetAlternateSetting(0);
 
     bus_ = std::make_unique<Em28178Bus>(this);

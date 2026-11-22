@@ -4,11 +4,13 @@
 
 #include "WinUsbDevice.hpp"
 
+#include <objbase.h>
 #include <setupapi.h>
 #include <usbiodef.h>
 
 #include <algorithm>
 #include <cwctype>
+#include <set>
 
 namespace friio {
 
@@ -59,34 +61,76 @@ WinUsbDevice::~WinUsbDevice() {
 }
 
 std::vector<std::wstring> WinUsbDevice::Enumerate(uint16_t vid, uint16_t pid) {
-    std::vector<std::wstring> result;
+    std::set<std::wstring> unique_paths;
     const std::wstring needle = FormatVidPid(vid, pid);
 
-    HDEVINFO dev_info = SetupDiGetClassDevsW(
-        &GUID_DEVINTERFACE_USB_DEVICE, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (dev_info == INVALID_HANDLE_VALUE) return result;
+    auto collect_by_guid = [&](const GUID& guid) {
+        HDEVINFO dev_info = SetupDiGetClassDevsW(
+            &guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+        if (dev_info == INVALID_HANDLE_VALUE) return;
 
-    SP_DEVICE_INTERFACE_DATA if_data{};
-    if_data.cbSize = sizeof(if_data);
-    for (DWORD idx = 0; SetupDiEnumDeviceInterfaces(dev_info, nullptr, &GUID_DEVINTERFACE_USB_DEVICE, idx, &if_data); ++idx) {
-        DWORD req_size = 0;
-        SetupDiGetDeviceInterfaceDetailW(dev_info, &if_data, nullptr, 0, &req_size, nullptr);
-        if (req_size == 0) continue;
+        SP_DEVICE_INTERFACE_DATA if_data{};
+        if_data.cbSize = sizeof(if_data);
+        for (DWORD idx = 0; SetupDiEnumDeviceInterfaces(dev_info, nullptr, &guid, idx, &if_data); ++idx) {
+            DWORD req_size = 0;
+            SetupDiGetDeviceInterfaceDetailW(dev_info, &if_data, nullptr, 0, &req_size, nullptr);
+            if (req_size == 0) continue;
 
-        std::vector<uint8_t> detail_buf(req_size);
-        auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(detail_buf.data());
-        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        if (SetupDiGetDeviceInterfaceDetailW(dev_info, &if_data, detail, req_size, nullptr, nullptr)) {
-            std::wstring path(detail->DevicePath);
-            if (ToLower(path).find(needle) != std::wstring::npos) {
-                result.push_back(std::move(path));
+            std::vector<uint8_t> detail_buf(req_size);
+            auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(detail_buf.data());
+            detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            if (SetupDiGetDeviceInterfaceDetailW(dev_info, &if_data, detail, req_size, nullptr, nullptr)) {
+                std::wstring path(detail->DevicePath);
+                if (ToLower(path).find(needle) != std::wstring::npos) {
+                    unique_paths.insert(std::move(path));
+                }
             }
         }
+        SetupDiDestroyDeviceInfoList(dev_info);
+    };
+
+    // 1. 単一インターフェース機器向け
+    collect_by_guid(GUID_DEVINTERFACE_USB_DEVICE);
+
+    // 2. 複合 USB 機器（MI_00 等、Zadig が DeviceInterfaceGUIDs を登録するケース）向け
+    HDEVINFO usb_devs = SetupDiGetClassDevsW(nullptr, L"USB", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    if (usb_devs != INVALID_HANDLE_VALUE) {
+        SP_DEVINFO_DATA dev_data{};
+        dev_data.cbSize = sizeof(dev_data);
+        for (DWORD idx = 0; SetupDiEnumDeviceInfo(usb_devs, idx, &dev_data); ++idx) {
+            wchar_t hw_id[512]{};
+            if (!SetupDiGetDeviceRegistryPropertyW(usb_devs, &dev_data, SPDRP_HARDWAREID, nullptr,
+                                                   reinterpret_cast<PBYTE>(hw_id), sizeof(hw_id), nullptr)) {
+                continue;
+            }
+            if (ToLower(hw_id).find(needle) == std::wstring::npos) continue;
+
+            HKEY hkey = SetupDiOpenDevRegKey(usb_devs, &dev_data, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+            if (hkey == INVALID_HANDLE_VALUE) continue;
+
+            wchar_t guid_buf[256]{};
+            DWORD buf_size = sizeof(guid_buf);
+            DWORD type = 0;
+            LONG rc = RegQueryValueExW(hkey, L"DeviceInterfaceGUIDs", nullptr, &type,
+                                       reinterpret_cast<LPBYTE>(guid_buf), &buf_size);
+            if (rc != ERROR_SUCCESS) {
+                buf_size = sizeof(guid_buf);
+                rc = RegQueryValueExW(hkey, L"DeviceInterfaceGUID", nullptr, &type,
+                                      reinterpret_cast<LPBYTE>(guid_buf), &buf_size);
+            }
+            RegCloseKey(hkey);
+
+            if (rc == ERROR_SUCCESS) {
+                GUID custom_guid{};
+                if (SUCCEEDED(CLSIDFromString(guid_buf, &custom_guid))) {
+                    collect_by_guid(custom_guid);
+                }
+            }
+        }
+        SetupDiDestroyDeviceInfoList(usb_devs);
     }
 
-    SetupDiDestroyDeviceInfoList(dev_info);
-    std::sort(result.begin(), result.end());
-    return result;
+    return std::vector<std::wstring>(unique_paths.begin(), unique_paths.end());
 }
 
 bool WinUsbDevice::Open(const std::wstring& device_path) {
