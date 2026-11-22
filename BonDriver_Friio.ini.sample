@@ -1,0 +1,13 @@
+[FRIIO]
+; 使用する機種: auto / ut100b / u3s（既定 auto）
+Model=auto
+
+; 同じ機種を複数接続している場合のインデックス（0 始まり）
+DeviceIndex=0
+
+; QRS-UT100B の内蔵 B-CAS スロットで ARIB STD-B25 復号を行う（1=有効 / 0=無効、既定 1）
+; ※MonsterTV U3S は外付け PC/SC リーダー前提のため自動無効
+EnableB25=1
+
+; 選局直後の安定化フィルター（Settler）を無効化する場合は 1
+NoSettle=0

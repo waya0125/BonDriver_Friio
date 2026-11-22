@@ -1,0 +1,69 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure & Build core tests
+        run: |
+          cmake -S . -B build-test
+          cmake --build build-test -j
+      - name: Run core tests
+        run: ctest --test-dir build-test --output-on-failure
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+          - arch: x86
+            cmake_arch: Win32
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (${{ matrix.arch }})
+        run: cmake -S . -B build-${{ matrix.arch }} -A ${{ matrix.cmake_arch }}
+      - name: Build (${{ matrix.arch }})
+        run: cmake --build build-${{ matrix.arch }} --config Release
+      - name: Package (${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item build-${{ matrix.arch }}\Release\BonDriver_Friio.dll stage\
+          Copy-Item build-${{ matrix.arch }}\Release\bon_test.exe stage\
+          Copy-Item BonDriver_Friio.ini.sample stage\
+          Copy-Item README.md stage\
+          Compress-Archive -Path stage\* -DestinationPath BonDriver_Friio-${{ matrix.arch }}.zip
+      - name: Upload artifact (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: BonDriver_Friio-${{ matrix.arch }}
+          path: BonDriver_Friio-${{ matrix.arch }}.zip
+
+  release:
+    needs: [test-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
