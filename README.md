@@ -5,15 +5,27 @@ Linux 向け録画ツール `recfriio` の設計・検証結果をもとに、**
 
 ## 対応機種と制約
 
-| 機種 | USB ID | 放送波 | 内蔵 B-CAS | 対応 Windows |
-|---|---|---|---|---|
-| Quixun **QRS-UT100B** | `3275:7020` | 地デジ（ISDB-T / CATV） | **対応**（`EnableB25=1`） | **Windows 7 / 8 / 10 / 11**（Bulk 転送） |
-| SKNET **MonsterTV U3S** | `3275:9015` | 3 波（ISDB-T / BS / 110 度 CS） | 非対応（外付け PC/SC 前提） | **Windows 8.1 / 10 / 11 専用**（Isochronous 転送） |
+| 機種 | USB ID | 放送波 | 内蔵 B-CAS | 対応 Windows | 状態 |
+|---|---|---|---|---|---|
+| Quixun **QRS-UT100B** | `3275:7020` | 地デジ（ISDB-T / CATV） | **対応**（`EnableB25=1`） | **Windows 7 / 8 / 10 / 11**（Bulk 転送） | **実機動作確認済み** |
+| SKNET **MonsterTV U3S** | `3275:9015` | 3 波（ISDB-T / BS / 110 度 CS） | 非対応（外付け PC/SC 前提） | **Windows 8.1 / 10 / 11 専用**（Isochronous 転送） | 実装済み（**Windows 実機未確認**） |
 
 > [!IMPORTANT]
-> - **MonsterTV U3S は Windows 7 非対応です**: WinUSB の Isochronous API（`WinUsb_ReadIsochPipeAsap`）が Windows 8.1 以降で追加されたため、Windows 7 環境では UT100B のみ動作します（API は動的解決しているため、DLL のロード自体は Windows 7 でも正常に行えます）。
+> - **MonsterTV U3S は Windows 7 非対応・Windows 実機未確認です**: WinUSB の Isochronous API（`WinUsb_ReadIsochPipeAsap`）が Windows 8.1 以降で追加されたため、Windows 7 環境では UT100B のみ動作します（API は動的解決しているため、DLL のロード自体は Windows 7 でも正常に行えます）。
 > - **QRS-UT100B のファームウェア**: 未初期化状態（`1738:5211`）の場合は、事前にファームウェアを転送して `3275:7020` にしておく必要があります。
+> - **複合 USB デバイス（UT100B）の Zadig 設定**: `MI_00`（Interface 00）に WinUSB をインストールしてください（`MI_01` の IR は不要）。
 > - **TVTest / EDCB 用は MSVC ビルド必須**: C++ ABI 互換のため、GitHub Releases の MSVC ビルド済み DLL を使用してください。
+
+## 実機動作確認（2026-11-22 時点）
+
+検証環境: Windows 7 x64（VM）+ Zadig 2.7（`MI_00` へ `WinUSB` 適用）+ QRS-UT100B（`3275:7020`, 内蔵 B-CAS スロット使用）
+
+| 検証項目 | 結果 |
+|---|---|
+| コア単体テスト（ASIE5606 DES ヌルパケット復号・MULTI2・Settler） | 全項目 PASS（Linux `ctest` / GitHub Actions） |
+| `bon_test.exe`（UHF 21ch、5 秒受信） | `OpenTuner` / `SetChannel` OK、`32.09 dB`、37,121 パケット、`sync_err=0` / `tei=0` |
+| **TVTest 0.10.0（64bit）** + MSVC ビルド `BonDriver_Friio.dll` | チャンネルスキャン・選局・内蔵 B-CAS 復号 OK、`33.91 dB / 14.15 Mbps`、**`E 0 / S 0`** |
+| MonsterTV U3S（`3275:9015`） | **未確認**（Windows 8.1 以降の実機環境で今後検証予定） |
 
 ## 使い方（Windows）
 
