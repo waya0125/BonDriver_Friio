@@ -9,7 +9,6 @@
 #include <usbiodef.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <cwctype>
 #include <set>
 
@@ -275,7 +274,6 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
         std::vector<uint8_t> ring_buf(num_urbs * urb_bytes);
         PVOID reg_handle = nullptr;
         if (!api.Register(winusb_, ep, ring_buf.data(), static_cast<ULONG>(ring_buf.size()), &reg_handle) || !reg_handle) {
-            std::fprintf(stderr, "[isoch] RegisterIsochBuffer failed: err=%lu\n", GetLastError());
             return;
         }
 
@@ -288,10 +286,6 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             slots[i].ov.hEvent = events[i];
         }
 
-        uint64_t sub_ok = 0, sub_fail = 0, ov_ok = 0, ov_fail = 0;
-        uint64_t pkt_nz = 0, pkt_zero = 0, pkt_err = 0, waits_to = 0;
-        DWORD last_sub_err = 0, last_ov_err = 0;
-        ULONG last_pkt_status = 0;
         bool resync = true;
 
         auto submit = [&](Slot& s) {
@@ -306,12 +300,9 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             DWORD err = ok ? 0 : GetLastError();
             s.pending = (ok || err == ERROR_IO_PENDING);
             if (s.pending) {
-                ++sub_ok;
                 resync = false;
                 if (ok) SetEvent(ev);
             } else {
-                ++sub_fail;
-                last_sub_err = err;
                 resync = true;
             }
         };
@@ -329,10 +320,7 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
                 ready_idx = next_idx;
             } else {
                 DWORD w = WaitForMultipleObjects(static_cast<DWORD>(num_urbs), events.data(), FALSE, 200);
-                if (w == WAIT_TIMEOUT) {
-                    ++waits_to;
-                    continue;
-                }
+                if (w == WAIT_TIMEOUT) continue;
                 if (w < WAIT_OBJECT_0 || w >= WAIT_OBJECT_0 + num_urbs) break;
                 ready_idx = static_cast<size_t>(w - WAIT_OBJECT_0);
             }
@@ -347,26 +335,17 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
 
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
-            if (!ok) last_ov_err = GetLastError();
             s.pending = false;
             ResetEvent(events[ready_idx]);
             packed.clear();
             if (ok && streaming_.load()) {
-                ++ov_ok;
                 const uint8_t* base = ring_buf.data() + s.offset;
                 for (const auto& d : s.descs) {
-                    if (d.Status != 0) {
-                        ++pkt_err;
-                        last_pkt_status = d.Status;
-                    } else if (d.Length > 0 && d.Offset + d.Length <= urb_bytes) {
-                        ++pkt_nz;
+                    if (d.Status == 0 && d.Length > 0 && d.Offset + d.Length <= urb_bytes) {
                         packed.insert(packed.end(), base + d.Offset, base + d.Offset + d.Length);
-                    } else {
-                        ++pkt_zero;
                     }
                 }
             } else if (!ok) {
-                ++ov_fail;
                 resync = true;
             }
             if (streaming_.load()) submit(s);
@@ -384,13 +363,6 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             if (s.ov.hEvent) CloseHandle(s.ov.hEvent);
         }
         api.Unregister(reg_handle);
-        std::fprintf(stderr,
-            "[isoch] sub_ok=%llu sub_fail=%llu(err=%lu) ov_ok=%llu ov_fail=%llu(err=%lu) "
-            "to=%llu pkt_nz=%llu pkt_zero=%llu pkt_err=%llu(st=0x%lx)\n",
-            (unsigned long long)sub_ok, (unsigned long long)sub_fail, last_sub_err,
-            (unsigned long long)ov_ok, (unsigned long long)ov_fail, last_ov_err,
-            (unsigned long long)waits_to, (unsigned long long)pkt_nz,
-            (unsigned long long)pkt_zero, (unsigned long long)pkt_err, last_pkt_status);
     });
     return true;
 }

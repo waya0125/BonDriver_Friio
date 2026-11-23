@@ -29,3 +29,6 @@
 | BS15_0（10 秒、`EnableB25=1`） | `13.83 dB`、23,012 パケット、`sync_err=0` / `tei=0` / `cc_err=26`、`scrambled=1,797`（初回 ECM 到着前のみ） |
 | CS2（10 秒、`EnableB25=1`） | `10.87 dB`、47,160 パケット、`sync_err=0` / `tei=0` / `cc_err=99`（未契約サービスを含むためスクランブル残存） |
 | UHF 21ch（5 秒、`EnableB25=0` 比較） | `33.56 dB`、8,678 パケット、`sync_err=0` / `tei=0` / `cc_err=0`、`scrambled=4,767` |
+
+> [!NOTE]
+> QEMU の仮想 USB パススルー（`usb-host` + `qemu-xhci`）環境では、`EnableB25=0` でも Isochronous 転送の応答が一時的に止まり `cc_err` が発生します。実環境では物理 Windows PC の USB ポート、または PCIe USB コントローラーのパススルー環境での利用を推奨します。
