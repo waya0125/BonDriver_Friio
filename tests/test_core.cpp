@@ -368,7 +368,18 @@ void TestB25DecoderWithMtvu3sCard() {
     dyna::B25Decoder b25;
     assert(b25.Init(std::move(tr), 4, 1));
     assert(b25.IsReady());
+    assert(!b25.IsSynced());
     assert(usb.resets == 1);
+
+    // 未同期時のスクランブルパケットは頭切りされて出力されないこと
+    std::vector<uint8_t> pre_pkt(188, 0xff);
+    pre_pkt[0] = 0x47;
+    pre_pkt[1] = 0x01;
+    pre_pkt[2] = 0x00;
+    pre_pkt[3] = 0xd0; // tsc=3 (scrambled)
+    auto trimmed = b25.DecodeStream(pre_pkt.data(), pre_pkt.size(), true);
+    assert(trimmed.empty());
+    assert(!b25.IsSynced());
 }
 
 } // namespace

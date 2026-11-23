@@ -273,8 +273,10 @@ void BonDriverFriio::StartDecodeWorker() {
             }
 
             if (!packets.empty()) {
-                b25_.DecodePackets(packets.data(), packets.size());
-                PushOutput(std::move(packets));
+                auto decoded = b25_.DecodeStream(packets.data(), packets.size(), !cfg_.no_settle);
+                if (!decoded.empty()) {
+                    PushOutput(std::move(decoded));
+                }
             }
 
             {

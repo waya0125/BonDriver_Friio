@@ -163,10 +163,13 @@ bool B25Decoder::ProcessECM(const uint8_t* ecm, size_t len, uint8_t ks_out[16], 
 void B25Decoder::ResetStream() {
     pat_asm_.Reset();
     pmt_pids_.clear();
+    seen_pmt_pids_.clear();
     pmt_asms_.clear();
     ecm_asms_.clear();
     ecm_states_.clear();
     es_to_ecm_.clear();
+    synced_ = false;
+    wait_packets_ = 0;
 }
 
 void B25Decoder::HandlePAT(const std::vector<uint8_t>& sec) {
@@ -184,9 +187,10 @@ void B25Decoder::HandlePAT(const std::vector<uint8_t>& sec) {
     pmt_pids_ = std::move(next_pmts);
 }
 
-void B25Decoder::HandlePMT(uint16_t /*pmt_pid*/, const std::vector<uint8_t>& sec) {
+void B25Decoder::HandlePMT(uint16_t pmt_pid, const std::vector<uint8_t>& sec) {
     if (sec.size() < 16 || sec[0] != 0x02) return;
     if (Mpeg2Crc32(sec.data(), sec.size()) != 0) return;
+    seen_pmt_pids_.insert(pmt_pid);
 
     const size_t prog_info_len = ReadBE16(sec.data() + 10) & 0x0fff;
     size_t pos = 12;
@@ -252,6 +256,7 @@ void B25Decoder::HandleECM(uint16_t ecm_pid, const std::vector<uint8_t>& sec) {
     uint16_t rc = 0;
     if (ProcessECM(payload, plen, ks, rc)) {
         it->second.last_ecm.assign(payload, payload + plen);
+        it->second.responded = true;
         if (rc == 0x0800 || rc == 0x0400 || rc == 0x0200 || rc == 0x0000) {
             it->second.cipher.SetScrambleKey(ks);
         } else {
@@ -260,46 +265,94 @@ void B25Decoder::HandleECM(uint16_t ecm_pid, const std::vector<uint8_t>& sec) {
     }
 }
 
+bool B25Decoder::CheckSynced() {
+    if (synced_) return true;
+    if (!pmt_pids_.empty() && seen_pmt_pids_.size() >= pmt_pids_.size() && !ecm_states_.empty()) {
+        bool all_responded = true;
+        for (const auto& kv : ecm_states_) {
+            if (!kv.second.responded) {
+                all_responded = false;
+                break;
+            }
+        }
+        if (all_responded) {
+            synced_ = true;
+            return true;
+        }
+    }
+    if (wait_packets_ >= kMaxSyncWaitPackets) {
+        synced_ = true;
+        return true;
+    }
+    return false;
+}
+
+void B25Decoder::ProcessSinglePacket(uint8_t* pkt) {
+    if (pkt[0] != 0x47 || (pkt[1] & 0x80) != 0) return;
+
+    const uint16_t pid = uint16_t((pkt[1] & 0x1f) << 8) | uint16_t(pkt[2]);
+    const uint8_t tsc = (pkt[3] >> 6) & 0x03;
+
+    if (pid == 0x0000 && tsc == 0) {
+        for (const auto& sec : pat_asm_.PushPacket(pkt)) HandlePAT(sec);
+        return;
+    }
+    if (tsc == 0 && pmt_pids_.count(pid)) {
+        for (const auto& sec : pmt_asms_[pid].PushPacket(pkt)) HandlePMT(pid, sec);
+        return;
+    }
+    if (tsc == 0 && ecm_states_.count(pid)) {
+        for (const auto& sec : ecm_asms_[pid].PushPacket(pkt)) HandleECM(pid, sec);
+        return;
+    }
+
+    if (tsc >= 2) {
+        auto map_it = es_to_ecm_.find(pid);
+        if (map_it == es_to_ecm_.end()) return;
+        auto ecm_it = ecm_states_.find(map_it->second);
+        if (ecm_it == ecm_states_.end() || !ecm_it->second.cipher.Keyed()) return;
+
+        const uint8_t afc = (pkt[3] >> 4) & 0x03;
+        if ((afc & 0x01) == 0) return;
+        size_t payload_off = 4;
+        if (afc & 0x02) {
+            payload_off += 1 + pkt[4];
+        }
+        if (payload_off >= 188) return;
+
+        ecm_it->second.cipher.Decrypt(tsc, pkt + payload_off, 188 - payload_off);
+        pkt[3] &= 0x3f; // clear transport_scrambling_control
+    }
+}
+
 void B25Decoder::DecodePackets(uint8_t* packets, size_t len) {
     if (!ready_) return;
     for (size_t p = 0; p + 188 <= len; p += 188) {
-        uint8_t* pkt = packets + p;
-        if (pkt[0] != 0x47 || (pkt[1] & 0x80) != 0) continue;
-
-        const uint16_t pid = uint16_t((pkt[1] & 0x1f) << 8) | uint16_t(pkt[2]);
-        const uint8_t tsc = (pkt[3] >> 6) & 0x03;
-
-        if (pid == 0x0000 && tsc == 0) {
-            for (const auto& sec : pat_asm_.PushPacket(pkt)) HandlePAT(sec);
-            continue;
-        }
-        if (tsc == 0 && pmt_pids_.count(pid)) {
-            for (const auto& sec : pmt_asms_[pid].PushPacket(pkt)) HandlePMT(pid, sec);
-            continue;
-        }
-        if (tsc == 0 && ecm_states_.count(pid)) {
-            for (const auto& sec : ecm_asms_[pid].PushPacket(pkt)) HandleECM(pid, sec);
-            continue;
-        }
-
-        if (tsc >= 2) {
-            auto map_it = es_to_ecm_.find(pid);
-            if (map_it == es_to_ecm_.end()) continue;
-            auto ecm_it = ecm_states_.find(map_it->second);
-            if (ecm_it == ecm_states_.end() || !ecm_it->second.cipher.Keyed()) continue;
-
-            const uint8_t afc = (pkt[3] >> 4) & 0x03;
-            if ((afc & 0x01) == 0) continue;
-            size_t payload_off = 4;
-            if (afc & 0x02) {
-                payload_off += 1 + pkt[4];
-            }
-            if (payload_off >= 188) continue;
-
-            ecm_it->second.cipher.Decrypt(tsc, pkt + payload_off, 188 - payload_off);
-            pkt[3] &= 0x3f; // clear transport_scrambling_control
-        }
+        ProcessSinglePacket(packets + p);
     }
+}
+
+std::vector<uint8_t> B25Decoder::DecodeStream(const uint8_t* packets, size_t len, bool trim_head) {
+    if (!packets || len < 188) return {};
+    if (!ready_ || !trim_head) {
+        std::vector<uint8_t> out(packets, packets + (len / 188) * 188);
+        if (ready_) DecodePackets(out.data(), out.size());
+        return out;
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve((len / 188) * 188);
+    uint8_t pkt[188];
+    for (size_t p = 0; p + 188 <= len; p += 188) {
+        std::memcpy(pkt, packets + p, 188);
+        ProcessSinglePacket(pkt);
+        if (!synced_) {
+            ++wait_packets_;
+            if (!CheckSynced()) continue;
+        }
+        out.insert(out.end(), pkt, pkt + 188);
+    }
+    return out;
 }
 
 } // namespace dyna

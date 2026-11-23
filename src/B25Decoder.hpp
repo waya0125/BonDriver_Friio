@@ -51,17 +51,29 @@ public:
     // 188 バイト単位の TS パケット列をその場で復号する
     void DecodePackets(uint8_t* packets, size_t len);
 
+    // 188 バイト単位の TS パケット列を復号して返す。
+    // trim_head=true の場合、チャンネル切替直後に全 ECM PID の初回応答が揃う（または上限パケットに達する）
+    // までの未復号パケットを頭切りし、冒頭のスクランブル残存 (S) を防ぐ。
+    std::vector<uint8_t> DecodeStream(const uint8_t* packets, size_t len, bool trim_head = true);
+
+    bool IsSynced() const { return synced_; }
+
 private:
     bool ConnectCard();
     bool ProcessECM(const uint8_t* ecm, size_t len, uint8_t ks_out[16], uint16_t& return_code);
     void HandlePAT(const std::vector<uint8_t>& sec);
     void HandlePMT(uint16_t pmt_pid, const std::vector<uint8_t>& sec);
     void HandleECM(uint16_t ecm_pid, const std::vector<uint8_t>& sec);
+    void ProcessSinglePacket(uint8_t* pkt);
+    bool CheckSynced();
 
     BcasTransport transport_;
     int round_ = 4;
     int ecm_retries_ = 3;
     bool ready_ = false;
+    bool synced_ = false;
+    size_t wait_packets_ = 0;
+    static constexpr size_t kMaxSyncWaitPackets = 15000;
 
     std::array<uint8_t, 32> system_key_{};
     std::array<uint8_t, 8> init_cbc_{};
@@ -69,12 +81,14 @@ private:
 
     SectionAssembler pat_asm_;
     std::unordered_set<uint16_t> pmt_pids_;
+    std::unordered_set<uint16_t> seen_pmt_pids_;
     std::unordered_map<uint16_t, SectionAssembler> pmt_asms_;
     std::unordered_map<uint16_t, SectionAssembler> ecm_asms_;
 
     struct EcmState {
         std::vector<uint8_t> last_ecm;
         Multi2Cipher cipher;
+        bool responded = false;
     };
     std::unordered_map<uint16_t, EcmState> ecm_states_;
     // ES PID -> ECM PID
