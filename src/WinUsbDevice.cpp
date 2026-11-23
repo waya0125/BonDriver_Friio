@@ -294,10 +294,9 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
 
         auto submit = [&](Slot& s) {
             ResetEvent(s.ov.hEvent);
-            // ContinueStream=TRUE だと 1 フレームでも遅延した際に後続 URB が連続して
-            // ERROR_INVALID_PARAMETER (87) で失敗するため、FALSE (ASAP) で投入する
+            const BOOL cont = (in_flight > 0) ? TRUE : FALSE;
             BOOL ok = api.ReadAsap(
-                reg_handle, static_cast<ULONG>(s.offset), static_cast<ULONG>(urb_bytes), FALSE,
+                reg_handle, static_cast<ULONG>(s.offset), static_cast<ULONG>(urb_bytes), cont,
                 static_cast<ULONG>(iso_packets), s.descs.data(), &s.ov);
             DWORD err = ok ? 0 : GetLastError();
             s.pending = (ok || err == ERROR_IO_PENDING);
