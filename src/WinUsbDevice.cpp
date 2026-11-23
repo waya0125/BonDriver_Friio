@@ -280,10 +280,12 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
         }
 
         std::vector<Slot> slots(num_urbs);
+        std::vector<HANDLE> events(num_urbs, nullptr);
         for (size_t i = 0; i < num_urbs; ++i) {
             slots[i].offset = i * urb_bytes;
             slots[i].descs.resize(iso_packets);
-            slots[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            events[i] = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            slots[i].ov.hEvent = events[i];
         }
 
         uint64_t sub_ok = 0, sub_fail = 0, ov_ok = 0, ov_fail = 0;
@@ -293,7 +295,10 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
         bool resync = true;
 
         auto submit = [&](Slot& s) {
-            ResetEvent(s.ov.hEvent);
+            HANDLE ev = s.ov.hEvent;
+            s.ov = {};
+            s.ov.hEvent = ev;
+            ResetEvent(ev);
             const BOOL cont = resync ? FALSE : TRUE;
             BOOL ok = api.ReadAsap(
                 reg_handle, static_cast<ULONG>(s.offset), static_cast<ULONG>(urb_bytes), cont,
@@ -303,6 +308,7 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             if (s.pending) {
                 ++sub_ok;
                 resync = false;
+                if (ok) SetEvent(ev);
             } else {
                 ++sub_fail;
                 last_sub_err = err;
@@ -315,25 +321,35 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
         std::vector<uint8_t> packed;
         packed.reserve(urb_bytes);
 
-        size_t idx = 0;
+        size_t next_idx = 0;
         while (streaming_.load()) {
-            auto& s = slots[idx];
-            idx = (idx + 1) % num_urbs;
+            // まず期待する順番 (next_idx) がすでに完了していれば即処理（順序維持）
+            size_t ready_idx = num_urbs;
+            if (slots[next_idx].pending && WaitForSingleObject(events[next_idx], 0) == WAIT_OBJECT_0) {
+                ready_idx = next_idx;
+            } else {
+                DWORD w = WaitForMultipleObjects(static_cast<DWORD>(num_urbs), events.data(), FALSE, 200);
+                if (w == WAIT_TIMEOUT) {
+                    ++waits_to;
+                    continue;
+                }
+                if (w < WAIT_OBJECT_0 || w >= WAIT_OBJECT_0 + num_urbs) break;
+                ready_idx = static_cast<size_t>(w - WAIT_OBJECT_0);
+            }
+
+            next_idx = (ready_idx + 1) % num_urbs;
+            auto& s = slots[ready_idx];
             if (!s.pending) {
+                ResetEvent(events[ready_idx]);
                 submit(s);
                 continue;
             }
-            DWORD w = WaitForSingleObject(s.ov.hEvent, 200);
-            if (w == WAIT_TIMEOUT) {
-                ++waits_to;
-                continue;
-            }
-            if (w != WAIT_OBJECT_0) break;
 
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
             if (!ok) last_ov_err = GetLastError();
             s.pending = false;
+            ResetEvent(events[ready_idx]);
             packed.clear();
             if (ok && streaming_.load()) {
                 ++ov_ok;
