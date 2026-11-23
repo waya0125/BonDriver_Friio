@@ -16,6 +16,7 @@ add_library(friio_core STATIC
     src/Settler.cpp
     src/Multi2.cpp
     src/B25Decoder.cpp
+    src/Mtvu3sCardReader.cpp
 )
 target_include_directories(friio_core PUBLIC src include)
 

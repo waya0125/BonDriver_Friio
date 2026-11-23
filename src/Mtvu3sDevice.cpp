@@ -86,6 +86,17 @@ bool Mtvu3sDevice::Open(int device_index) {
     sat_tuner_ = std::make_unique<Qm1d1c0042>(sat_->tunerBus(), 0xc0);
     const uint8_t zero_key[16]{};
     aes_.setKey(zero_key);
+
+    Mtvu3sCardIO card_io;
+    card_io.read_reg = [this](uint8_t reg, uint8_t& val) { return ReadReg(reg, val); };
+    card_io.write_reg = [this](uint8_t reg, uint8_t val) { return WriteReg(reg, val); };
+    card_io.control = [this](uint8_t req_type, uint8_t req, uint16_t val, uint16_t idx,
+                             uint8_t* data, uint16_t len, uint32_t timeout_ms, size_t* transferred) {
+        std::lock_guard<std::mutex> lk(io_mu_);
+        return usb_.ControlTransfer(req_type, req, val, idx, data, len, timeout_ms, transferred);
+    };
+    card_io.sleep_ms = [](int ms) { SleepMs(ms); };
+    card_ = std::make_unique<Mtvu3sCardReader>(std::move(card_io));
     return true;
 }
 
@@ -170,9 +181,25 @@ void Mtvu3sDevice::DescramblePacket(uint8_t pkt[188]) const {
     }
 }
 
+bool Mtvu3sDevice::ResetBcas() {
+    std::lock_guard<std::mutex> lk(bcas_mu_);
+    if (!card_ || !usb_.IsOpen()) return false;
+    return card_->Reset();
+}
+
+bool Mtvu3sDevice::TransmitBcas(const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp_out) {
+    std::lock_guard<std::mutex> lk(bcas_mu_);
+    if (!card_ || !usb_.IsOpen()) return false;
+    return card_->Transmit(apdu, len, resp_out);
+}
+
 void Mtvu3sDevice::Close() {
     if (!usb_.IsOpen()) return;
     StopStream();
+    {
+        std::lock_guard<std::mutex> lk(bcas_mu_);
+        card_.reset();
+    }
     usb_.Close();
 }
 

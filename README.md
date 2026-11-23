@@ -8,7 +8,7 @@ Linux 向け録画ツール `recfriio` の設計をもとに、**WinUSB 直接�
 | 機種 | USB ID | 放送波 | 内蔵 B-CAS | 対応 Windows | 状態 | 詳細・手順 |
 |---|---|---|---|---|---|---|
 | Quixun **QRS-UT100B** | `3275:7020` | 地デジ（ISDB-T / CATV） | **対応**（`EnableB25=1`） | Windows 7〜11 | **実機動作確認済み** | [docs/QRS-UT100B.md](docs/QRS-UT100B.md) |
-| SKNET **MonsterTV U3S** | `3275:9015` | 3 波（ISDB-T / BS / CS） | 非対応（外付け PC/SC） | Windows 8.1〜11 | 実装済み（**実機未確認**） | [docs/SK-MTVU3S.md](docs/SK-MTVU3S.md) |
+| SKNET **MonsterTV U3S** | `3275:9015` | 3 波（ISDB-T / BS / CS） | **対応**（`EnableB25=1`） | Windows 8.1〜11 | 実装済み（**実機未確認**） | [docs/SK-MTVU3S.md](docs/SK-MTVU3S.md) |
 
 > [!NOTE]
 > TVTest / EDCB 用は C++ ABI 互換のため、GitHub Releases の **MSVC ビルド済み DLL** を使用してください。

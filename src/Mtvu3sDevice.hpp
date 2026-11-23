@@ -7,6 +7,7 @@
 #include "Aes128Ecb.hpp"
 #include "Fc0013.hpp"
 #include "I2cBus.hpp"
+#include "Mtvu3sCardReader.hpp"
 #include "Qm1d1c0042.hpp"
 #include "Tc90522.hpp"
 #include "WinUsbDevice.hpp"
@@ -42,6 +43,10 @@ public:
 
     void DescramblePacket(uint8_t pkt[188]) const;
 
+    // EM28178 内蔵 B-CAS スロット（T=1）
+    bool ResetBcas();
+    bool TransmitBcas(const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp_out);
+
 private:
     class Em28178Bus : public I2cBus {
     public:
@@ -65,6 +70,8 @@ private:
     std::unique_ptr<Qm1d1c0042> sat_tuner_;
     Aes128EcbDecryptor aes_;
     Band band_ = Band::UHF;
+    std::mutex bcas_mu_;
+    std::unique_ptr<Mtvu3sCardReader> card_;
 };
 
 } // namespace friio

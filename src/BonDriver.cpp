@@ -100,7 +100,17 @@ const BOOL BonDriverFriio::OpenTuner(void) {
         if (u3s_.Init()) {
             active_model_ = Model::Mtvu3s;
             tuner_name_ = L"BonDriver_Friio (MonsterTV U3S)";
-            b25_active_ = false; // U3S は外付け PC/SC 前提
+            b25_active_ = false;
+            if (cfg_.enable_b25) {
+                dyna::BcasTransport tr;
+                tr.reset = [this]() { return u3s_.ResetBcas(); };
+                tr.transmit = [this](const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp) {
+                    return u3s_.TransmitBcas(apdu, len, resp);
+                };
+                tr.max_apdu_len = kMtvu3sCardMaxApdu;
+                // カード待機中はストリーム処理が止まるため、ECM 失敗時の再接続は 1 回までにする
+                b25_active_ = b25_.Init(std::move(tr), 4, 1);
+            }
             is_open_ = true;
             return TRUE;
         }
@@ -178,6 +188,7 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
         stale_drop_ = 0;
         rest_.clear();
         settler_.Reset();
+        if (b25_active_) b25_.ResetStream();
 
         if (!u3s_.StartStream([this](const uint8_t* d, size_t n) { OnRawChunk(d, n); })) return FALSE;
         cur_space_ = dwSpace;

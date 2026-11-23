@@ -107,9 +107,10 @@ std::vector<std::vector<uint8_t>> SectionAssembler::PushPacket(const uint8_t pkt
     return out;
 }
 
-bool B25Decoder::Init(BcasTransport transport, int multi2_round) {
+bool B25Decoder::Init(BcasTransport transport, int multi2_round, int ecm_retries) {
     transport_ = std::move(transport);
     round_ = multi2_round;
+    ecm_retries_ = ecm_retries;
     ResetStream();
     ready_ = ConnectCard();
     return ready_;
@@ -142,9 +143,13 @@ bool B25Decoder::ProcessECM(const uint8_t* ecm, size_t len, uint8_t ks_out[16], 
     cmd.insert(cmd.end(), ecm, ecm + len);
     cmd.push_back(0x00);
 
+    if (transport_.max_apdu_len > 0 && cmd.size() > transport_.max_apdu_len) {
+        return false;
+    }
+
     std::vector<uint8_t> r;
     bool ok = transport_.transmit(cmd.data(), cmd.size(), r) && r.size() >= 25;
-    for (int retry = 0; !ok && retry < 3; ++retry) {
+    for (int retry = 0; !ok && retry < ecm_retries_; ++retry) {
         if (!ConnectCard()) continue;
         ok = transport_.transmit(cmd.data(), cmd.size(), r) && r.size() >= 25;
     }

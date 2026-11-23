@@ -19,6 +19,8 @@ namespace dyna {
 struct BcasTransport {
     std::function<bool()> reset;
     std::function<bool(const uint8_t* apdu, size_t len, std::vector<uint8_t>& resp)> transmit;
+    // 送信可能な APDU 最大長（0 のときは制限なし）。超過時は再リセットせず即失敗する。
+    size_t max_apdu_len = 0;
 };
 
 // MPEG-2 TS セクション（PAT / PMT / ECM）の組み立て器
@@ -40,7 +42,7 @@ public:
     B25Decoder() = default;
 
     // カードを初期化（Reset + INT コマンド）してシステム鍵と CBC 初期値を取得する
-    bool Init(BcasTransport transport, int multi2_round = 4);
+    bool Init(BcasTransport transport, int multi2_round = 4, int ecm_retries = 3);
     bool IsReady() const { return ready_; }
 
     // チャンネル切替時に PAT / PMT / ECM 状態をクリアする（カード鍵は保持）
@@ -58,6 +60,7 @@ private:
 
     BcasTransport transport_;
     int round_ = 4;
+    int ecm_retries_ = 3;
     bool ready_ = false;
 
     std::array<uint8_t, 32> system_key_{};

@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     }
     std::printf("SetChannel() OK, SignalLevel=%.2f\n", bon->GetSignalLevel());
 
-    uint64_t total_pkts = 0, sync_err = 0, tei = 0, cc_err = 0;
+    uint64_t total_pkts = 0, sync_err = 0, tei = 0, cc_err = 0, scrambled = 0;
     std::unordered_map<uint16_t, uint8_t> last_cc;
     const auto end_time = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
 
@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
                 ++total_pkts;
                 if (pkt[0] != 0x47) { ++sync_err; continue; }
                 if (pkt[1] & 0x80) { ++tei; continue; }
+                if ((pkt[3] & 0xc0) != 0) ++scrambled;
                 const uint16_t pid = uint16_t((pkt[1] & 0x1f) << 8) | uint16_t(pkt[2]);
                 if (pid == 0x1fff) continue;
                 const uint8_t afc = (pkt[3] >> 4) & 0x03;
@@ -89,12 +90,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::printf("Done (%ds): SignalLevel=%.2f packets=%llu sync_err=%llu tei=%llu cc_err=%llu\n",
+    std::printf("Done (%ds): SignalLevel=%.2f packets=%llu sync_err=%llu tei=%llu cc_err=%llu scrambled=%llu\n",
                 seconds, bon->GetSignalLevel(),
                 static_cast<unsigned long long>(total_pkts),
                 static_cast<unsigned long long>(sync_err),
                 static_cast<unsigned long long>(tei),
-                static_cast<unsigned long long>(cc_err));
+                static_cast<unsigned long long>(cc_err),
+                static_cast<unsigned long long>(scrambled));
 
     bon->CloseTuner();
     bon->Release();
