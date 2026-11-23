@@ -9,6 +9,7 @@
 #include <usbiodef.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cwctype>
 #include <set>
 
@@ -265,30 +266,47 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
     stream_thread_ = std::thread([this, api, ep, num_urbs, iso_packets, urb_bytes, cb = std::move(cb)]() {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         struct Slot {
-            std::vector<uint8_t> buf;
+            size_t offset = 0;
             std::vector<IsochPacketDesc> descs;
-            PVOID reg_handle = nullptr;
             OVERLAPPED ov{};
             bool pending = false;
         };
 
-        std::vector<Slot> slots(num_urbs);
-        for (auto& s : slots) {
-            s.buf.resize(urb_bytes);
-            s.descs.resize(iso_packets);
-            s.ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            api.Register(winusb_, ep, s.buf.data(), static_cast<ULONG>(s.buf.size()), &s.reg_handle);
+        std::vector<uint8_t> ring_buf(num_urbs * urb_bytes);
+        PVOID reg_handle = nullptr;
+        if (!api.Register(winusb_, ep, ring_buf.data(), static_cast<ULONG>(ring_buf.size()), &reg_handle) || !reg_handle) {
+            std::fprintf(stderr, "[isoch] RegisterIsochBuffer failed: err=%lu\n", GetLastError());
+            return;
         }
 
-        bool first = true;
+        std::vector<Slot> slots(num_urbs);
+        for (size_t i = 0; i < num_urbs; ++i) {
+            slots[i].offset = i * urb_bytes;
+            slots[i].descs.resize(iso_packets);
+            slots[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        }
+
+        uint64_t sub_ok = 0, sub_fail = 0, ov_ok = 0, ov_fail = 0;
+        uint64_t pkt_nz = 0, pkt_zero = 0, pkt_err = 0, waits_to = 0;
+        DWORD last_sub_err = 0, last_ov_err = 0;
+        ULONG last_pkt_status = 0;
+        size_t in_flight = 0;
+
         auto submit = [&](Slot& s) {
-            if (!s.reg_handle) return;
             ResetEvent(s.ov.hEvent);
+            const BOOL cont = (in_flight > 0) ? TRUE : FALSE;
             BOOL ok = api.ReadAsap(
-                s.reg_handle, 0, static_cast<ULONG>(urb_bytes), first ? FALSE : TRUE,
+                reg_handle, static_cast<ULONG>(s.offset), static_cast<ULONG>(urb_bytes), cont,
                 static_cast<ULONG>(iso_packets), s.descs.data(), &s.ov);
-            s.pending = (ok || GetLastError() == ERROR_IO_PENDING);
-            first = !s.pending;
+            DWORD err = ok ? 0 : GetLastError();
+            s.pending = (ok || err == ERROR_IO_PENDING);
+            if (s.pending) {
+                ++sub_ok;
+                ++in_flight;
+            } else {
+                ++sub_fail;
+                last_sub_err = err;
+            }
         };
 
         for (auto& s : slots) submit(s);
@@ -302,20 +320,31 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             idx = (idx + 1) % num_urbs;
             if (!s.pending) { submit(s); continue; }
             DWORD w = WaitForSingleObject(s.ov.hEvent, 200);
-            if (w == WAIT_TIMEOUT) continue;
+            if (w == WAIT_TIMEOUT) { ++waits_to; continue; }
             if (w != WAIT_OBJECT_0) break;
 
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
+            if (!ok) last_ov_err = GetLastError();
             s.pending = false;
-            if (!ok) first = true;
+            if (in_flight > 0) --in_flight;
             packed.clear();
             if (ok && streaming_.load()) {
+                ++ov_ok;
+                const uint8_t* base = ring_buf.data() + s.offset;
                 for (const auto& d : s.descs) {
-                    if (d.Status == 0 && d.Length > 0 && d.Offset + d.Length <= s.buf.size()) {
-                        packed.insert(packed.end(), s.buf.data() + d.Offset, s.buf.data() + d.Offset + d.Length);
+                    if (d.Status != 0) {
+                        ++pkt_err;
+                        last_pkt_status = d.Status;
+                    } else if (d.Length > 0 && d.Offset + d.Length <= urb_bytes) {
+                        ++pkt_nz;
+                        packed.insert(packed.end(), base + d.Offset, base + d.Offset + d.Length);
+                    } else {
+                        ++pkt_zero;
                     }
                 }
+            } else if (!ok) {
+                ++ov_fail;
             }
             if (streaming_.load()) submit(s);
             if (!packed.empty() && streaming_.load()) {
@@ -329,9 +358,16 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
                 ULONG dummy = 0;
                 WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, TRUE);
             }
-            if (s.reg_handle) api.Unregister(s.reg_handle);
             if (s.ov.hEvent) CloseHandle(s.ov.hEvent);
         }
+        api.Unregister(reg_handle);
+        std::fprintf(stderr,
+            "[isoch] sub_ok=%llu sub_fail=%llu(err=%lu) ov_ok=%llu ov_fail=%llu(err=%lu) "
+            "to=%llu pkt_nz=%llu pkt_zero=%llu pkt_err=%llu(st=0x%lx)\n",
+            (unsigned long long)sub_ok, (unsigned long long)sub_fail, last_sub_err,
+            (unsigned long long)ov_ok, (unsigned long long)ov_fail, last_ov_err,
+            (unsigned long long)waits_to, (unsigned long long)pkt_nz,
+            (unsigned long long)pkt_zero, (unsigned long long)pkt_err, last_pkt_status);
     });
     return true;
 }
