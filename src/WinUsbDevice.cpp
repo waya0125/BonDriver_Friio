@@ -287,8 +287,8 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             BOOL ok = api.ReadAsap(
                 s.reg_handle, 0, static_cast<ULONG>(urb_bytes), first ? FALSE : TRUE,
                 static_cast<ULONG>(iso_packets), s.descs.data(), &s.ov);
-            first = false;
             s.pending = (ok || GetLastError() == ERROR_IO_PENDING);
+            first = !s.pending;
         };
 
         for (auto& s : slots) submit(s);
@@ -308,6 +308,7 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
             s.pending = false;
+            if (!ok) first = true;
             packed.clear();
             if (ok && streaming_.load()) {
                 for (const auto& d : s.descs) {

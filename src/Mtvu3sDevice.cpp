@@ -162,7 +162,8 @@ bool Mtvu3sDevice::StartStream(WinUsbDevice::ChunkCallback cb) {
     if (!usb_.SetAlternateSetting(1)) return false;
     if (!WriteReg(0x5d, 0xef)) return false;
     if (!WriteReg(0x5f, 0x89)) return false;
-    return usb_.StartAsyncIsochStream(0x84, 64, 940, 16, std::move(cb));
+    // 1 URB = 64 microframes (8 ms) x 32 URBs = 256 ms リング（WinUSB / xHCI で安定しやすい粒度）
+    return usb_.StartAsyncIsochStream(0x84, 32, 940, 64, std::move(cb));
 }
 
 void Mtvu3sDevice::StopStream() {

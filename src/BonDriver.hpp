@@ -91,7 +91,7 @@ private:
     bool b25_active_ = false;
 
     // B25 復号ワーカースレッド（USB 受信スレッドを ECM 待機でブロックしないため分離）
-    static constexpr size_t kMaxRawQueueChunks = 512;
+    static constexpr size_t kMaxRawQueueChunks = 2048;
     std::mutex raw_mu_;
     std::condition_variable raw_cv_;
     std::condition_variable decode_idle_cv_;
@@ -101,7 +101,7 @@ private:
     std::thread decode_thread_;
 
     // 出力キュー
-    static constexpr size_t kMaxQueueChunks = 512;
+    static constexpr size_t kMaxQueueChunks = 2048;
     std::mutex queue_mu_;
     std::condition_variable queue_cv_;
     std::deque<std::vector<uint8_t>> queue_;
