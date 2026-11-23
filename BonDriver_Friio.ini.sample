@@ -9,7 +9,7 @@ DeviceIndex=0
 ; ※QRS-UT100B・MonsterTV U3S 両対応。外付け PC/SC リーダーを使う場合は 0 に設定
 EnableB25=1
 
-; 選局直後の安定化フィルター（Settler）を無効化する場合は 1
+; 選局直後の安定化フィルター（Settler）および B25 初期鍵待ちの頭切りを無効化する場合は 1
 NoSettle=0
 
 ; QRS-UT100B 自動ファームウェア転送用（省略時は DLL と同じフォルダの asv5211-firmware.bin）
