@@ -263,6 +263,7 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
 
     const size_t urb_bytes = iso_packet_size * iso_packets;
     stream_thread_ = std::thread([this, api, ep, num_urbs, iso_packets, urb_bytes, cb = std::move(cb)]() {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         struct Slot {
             std::vector<uint8_t> buf;
             std::vector<IsochPacketDesc> descs;
@@ -307,18 +308,18 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
             s.pending = false;
+            packed.clear();
             if (ok && streaming_.load()) {
-                packed.clear();
                 for (const auto& d : s.descs) {
                     if (d.Status == 0 && d.Length > 0 && d.Offset + d.Length <= s.buf.size()) {
                         packed.insert(packed.end(), s.buf.data() + d.Offset, s.buf.data() + d.Offset + d.Length);
                     }
                 }
-                if (!packed.empty()) {
-                    cb(packed.data(), packed.size());
-                }
             }
             if (streaming_.load()) submit(s);
+            if (!packed.empty() && streaming_.load()) {
+                cb(packed.data(), packed.size());
+            }
         }
 
         WinUsb_AbortPipe(winusb_, ep);

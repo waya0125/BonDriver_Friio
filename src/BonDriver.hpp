@@ -15,6 +15,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace friio {
@@ -66,6 +67,10 @@ private:
     void LoadIni(HMODULE module);
     void OnRawChunk(const uint8_t* data, size_t len);
     std::vector<uint8_t> AlignAndDecrypt(const uint8_t* data, size_t len);
+    void StartDecodeWorker();
+    void StopDecodeWorker();
+    void ResetDecodePipeline();
+    void PushOutput(std::vector<uint8_t>&& packets);
 
     Config cfg_;
     Model active_model_ = Model::Auto;
@@ -84,6 +89,16 @@ private:
     dyna::Settler settler_{5000, 200000};
     dyna::B25Decoder b25_;
     bool b25_active_ = false;
+
+    // B25 復号ワーカースレッド（USB 受信スレッドを ECM 待機でブロックしないため分離）
+    static constexpr size_t kMaxRawQueueChunks = 512;
+    std::mutex raw_mu_;
+    std::condition_variable raw_cv_;
+    std::condition_variable decode_idle_cv_;
+    std::deque<std::vector<uint8_t>> raw_queue_;
+    bool decode_stop_ = false;
+    bool decode_busy_ = false;
+    std::thread decode_thread_;
 
     // 出力キュー
     static constexpr size_t kMaxQueueChunks = 512;

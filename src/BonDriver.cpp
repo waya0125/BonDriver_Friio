@@ -89,6 +89,7 @@ const BOOL BonDriverFriio::OpenTuner(void) {
                     };
                     b25_active_ = b25_.Init(std::move(tr), 4);
                 }
+                if (b25_active_) StartDecodeWorker();
                 is_open_ = true;
                 return TRUE;
             }
@@ -111,6 +112,7 @@ const BOOL BonDriverFriio::OpenTuner(void) {
                 // カード待機中はストリーム処理が止まるため、ECM 失敗時の再接続は 1 回までにする
                 b25_active_ = b25_.Init(std::move(tr), 4, 1);
             }
+            if (b25_active_) StartDecodeWorker();
             is_open_ = true;
             return TRUE;
         }
@@ -122,9 +124,13 @@ const BOOL BonDriverFriio::OpenTuner(void) {
 
 void BonDriverFriio::CloseTuner(void) {
     if (!is_open_) return;
+    if (active_model_ == Model::Ut100b) ut100b_.StopStream();
+    else if (active_model_ == Model::Mtvu3s) u3s_.StopStream();
+    StopDecodeWorker();
     if (active_model_ == Model::Ut100b) ut100b_.Close();
     else if (active_model_ == Model::Mtvu3s) u3s_.Close();
     PurgeTsStream();
+    b25_active_ = false;
     is_open_ = false;
 }
 
@@ -146,13 +152,13 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
         }
 
         ut100b_.StopStream();
+        ResetDecodePipeline();
         PurgeTsStream();
         if (!ut100b_.Tune(freq_mhz)) return FALSE;
 
         stale_drop_ = 2 * 16384;
         rest_.clear();
         settler_.Reset();
-        if (b25_active_) b25_.ResetStream();
 
         if (!ut100b_.StartStream([this](const uint8_t* d, size_t n) { OnRawChunk(d, n); })) return FALSE;
         cur_space_ = dwSpace;
@@ -162,6 +168,7 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
 
     if (active_model_ == Model::Mtvu3s) {
         u3s_.StopStream();
+        ResetDecodePipeline();
         PurgeTsStream();
 
         bool ok = false;
@@ -188,7 +195,6 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
         stale_drop_ = 0;
         rest_.clear();
         settler_.Reset();
-        if (b25_active_) b25_.ResetStream();
 
         if (!u3s_.StartStream([this](const uint8_t* d, size_t n) { OnRawChunk(d, n); })) return FALSE;
         cur_space_ = dwSpace;
@@ -246,20 +252,86 @@ std::vector<uint8_t> BonDriverFriio::AlignAndDecrypt(const uint8_t* data, size_t
     return out;
 }
 
+void BonDriverFriio::StartDecodeWorker() {
+    StopDecodeWorker();
+    {
+        std::lock_guard<std::mutex> lk(raw_mu_);
+        raw_queue_.clear();
+        decode_stop_ = false;
+        decode_busy_ = false;
+    }
+    decode_thread_ = std::thread([this]() {
+        while (true) {
+            std::vector<uint8_t> packets;
+            {
+                std::unique_lock<std::mutex> lk(raw_mu_);
+                raw_cv_.wait(lk, [this]() { return decode_stop_ || !raw_queue_.empty(); });
+                if (decode_stop_) break;
+                packets = std::move(raw_queue_.front());
+                raw_queue_.pop_front();
+                decode_busy_ = true;
+            }
+
+            if (!packets.empty()) {
+                b25_.DecodePackets(packets.data(), packets.size());
+                PushOutput(std::move(packets));
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(raw_mu_);
+                decode_busy_ = false;
+                if (raw_queue_.empty()) decode_idle_cv_.notify_all();
+            }
+        }
+    });
+}
+
+void BonDriverFriio::StopDecodeWorker() {
+    {
+        std::lock_guard<std::mutex> lk(raw_mu_);
+        decode_stop_ = true;
+        raw_queue_.clear();
+    }
+    raw_cv_.notify_all();
+    if (decode_thread_.joinable()) {
+        decode_thread_.join();
+    }
+    std::lock_guard<std::mutex> lk(raw_mu_);
+    decode_stop_ = false;
+    decode_busy_ = false;
+}
+
+void BonDriverFriio::ResetDecodePipeline() {
+    if (!b25_active_) return;
+    std::unique_lock<std::mutex> lk(raw_mu_);
+    raw_queue_.clear();
+    decode_idle_cv_.wait(lk, [this]() { return !decode_busy_; });
+    b25_.ResetStream();
+}
+
+void BonDriverFriio::PushOutput(std::vector<uint8_t>&& packets) {
+    std::lock_guard<std::mutex> lk(queue_mu_);
+    while (queue_.size() >= kMaxQueueChunks) queue_.pop_front();
+    queue_.push_back(std::move(packets));
+    queue_cv_.notify_one();
+}
+
 void BonDriverFriio::OnRawChunk(const uint8_t* data, size_t len) {
     auto packets = AlignAndDecrypt(data, len);
     if (!cfg_.no_settle && !packets.empty()) {
         packets = settler_.Feed(packets.data(), packets.size());
     }
     if (packets.empty()) return;
+
     if (b25_active_) {
-        b25_.DecodePackets(packets.data(), packets.size());
+        std::lock_guard<std::mutex> lk(raw_mu_);
+        while (raw_queue_.size() >= kMaxRawQueueChunks) raw_queue_.pop_front();
+        raw_queue_.push_back(std::move(packets));
+        raw_cv_.notify_one();
+        return;
     }
 
-    std::lock_guard<std::mutex> lk(queue_mu_);
-    while (queue_.size() >= kMaxQueueChunks) queue_.pop_front();
-    queue_.push_back(std::move(packets));
-    queue_cv_.notify_one();
+    PushOutput(std::move(packets));
 }
 
 const float BonDriverFriio::GetSignalLevel(void) {
