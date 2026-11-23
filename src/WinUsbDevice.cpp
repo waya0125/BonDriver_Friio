@@ -309,6 +309,20 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             }
         };
 
+        auto drain_and_restart = [&]() {
+            WinUsb_AbortPipe(winusb_, ep);
+            for (auto& sl : slots) {
+                if (sl.pending) {
+                    ULONG d = 0;
+                    WinUsb_GetOverlappedResult(winusb_, &sl.ov, &d, TRUE);
+                    sl.pending = false;
+                }
+            }
+            in_flight = 0;
+            if (!streaming_.load()) return;
+            for (auto& sl : slots) submit(sl);
+        };
+
         for (auto& s : slots) submit(s);
 
         std::vector<uint8_t> packed;
@@ -317,19 +331,37 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
         size_t idx = 0;
         while (streaming_.load()) {
             auto& s = slots[idx];
-            idx = (idx + 1) % num_urbs;
-            if (!s.pending) { submit(s); continue; }
+            if (!s.pending) {
+                drain_and_restart();
+                idx = 0;
+                continue;
+            }
             DWORD w = WaitForSingleObject(s.ov.hEvent, 200);
-            if (w == WAIT_TIMEOUT) { ++waits_to; continue; }
+            if (w == WAIT_TIMEOUT) {
+                ++waits_to;
+                if (!streaming_.load()) break;
+                drain_and_restart();
+                idx = 0;
+                continue;
+            }
             if (w != WAIT_OBJECT_0) break;
 
+            idx = (idx + 1) % num_urbs;
             ULONG dummy = 0;
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
             if (!ok) last_ov_err = GetLastError();
             s.pending = false;
             if (in_flight > 0) --in_flight;
+            if (!ok) {
+                ++ov_fail;
+                if (!streaming_.load()) break;
+                drain_and_restart();
+                idx = 0;
+                continue;
+            }
+
             packed.clear();
-            if (ok && streaming_.load()) {
+            if (streaming_.load()) {
                 ++ov_ok;
                 const uint8_t* base = ring_buf.data() + s.offset;
                 for (const auto& d : s.descs) {
@@ -343,8 +375,6 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
                         ++pkt_zero;
                     }
                 }
-            } else if (!ok) {
-                ++ov_fail;
             }
             if (streaming_.load()) submit(s);
             if (!packed.empty() && streaming_.load()) {
