@@ -195,25 +195,20 @@ bool Tc90522::isSatSlotLocked()
 	return (readReg(TC_S_REG_SLOT_STAT) & TC_S_SLOT_LOCK_MASK) != 0;
 }
 
-void Tc90522::selectSatTsid(uint16_t reqTsid)
+void Tc90522::readSatTmccTsids(uint16_t out[12])
 {
 	uint8_t tmcc[24];
 	readRegs(TC_S_REG_TMCC_TSID, tmcc, sizeof(tmcc));
-	uint16_t tsid = reqTsid;
-	if (tsid == 0) {
-		for (int i = 0; i < 12; i++) {
-			uint16_t cand = static_cast<uint16_t>((tmcc[i * 2] << 8) | tmcc[i * 2 + 1]);
-			if (cand != 0xffff && cand != 0x0000) {
-				tsid = cand;
-				break;
-			}
-		}
+	for (int i = 0; i < 12; i++) {
+		out[i] = static_cast<uint16_t>((tmcc[i * 2] << 8) | tmcc[i * 2 + 1]);
 	}
-	if (tsid != 0) {
-		writeReg(TC_S_REG_TSID_HI, static_cast<uint8_t>(tsid >> 8));
-		writeReg(TC_S_REG_TSID_LO, static_cast<uint8_t>(tsid & 0xff));
-		resetSat();
-	}
+}
+
+void Tc90522::setSatTsid(uint16_t tsid)
+{
+	writeReg(TC_S_REG_TSID_HI, static_cast<uint8_t>(tsid >> 8));
+	writeReg(TC_S_REG_TSID_LO, static_cast<uint8_t>(tsid & 0xff));
+	resetSat();
 }
 
 float Tc90522::getTerCnr()

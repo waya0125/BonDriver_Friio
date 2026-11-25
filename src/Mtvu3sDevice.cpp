@@ -15,30 +15,6 @@ inline void SleepMs(int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 
-bool MatchTSID(uint16_t want, const std::vector<uint16_t>& ids, uint16_t& matched) {
-    if (want == 0) { matched = 0; return true; }
-    for (uint16_t id : ids) {
-        if (id == want) { matched = id; return true; }
-    }
-    if ((want & 0xf000) == 0x4000) {
-        for (uint16_t id : ids) {
-            if ((id & 0xf000) == 0x4000 && (id & ~0x0e00u) == (want & ~0x0e00u)) {
-                matched = id;
-                return true;
-            }
-        }
-    }
-    if ((want & 0xe000) == 0x6000) {
-        for (uint16_t id : ids) {
-            if ((id & 0xe000) == 0x6000 && (id & ~0x1000u) == (want & ~0x1000u)) {
-                matched = id;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 void Mtvu3sDevice::Em28178Bus::write(uint8_t addr, const uint8_t* data, uint16_t len, bool stop) {
@@ -137,16 +113,46 @@ bool Mtvu3sDevice::TuneUHF(uint32_t freq_khz) {
     return true;
 }
 
-bool Mtvu3sDevice::TuneSat(uint32_t freq_khz, uint16_t tsid) {
-    band_ = (tsid & 0xf000) == 0x4000 ? Band::BS : Band::CS;
+bool Mtvu3sDevice::TuneSatAndReadTmcc(uint32_t freq_khz, std::vector<uint16_t>& ids) {
     ter_->setTerActive(false);
     sat_->setSatActive(true);
     sat_tuner_->tune(freq_khz);
     sat_->resetSat();
-    waitUntil([this]() { return sat_->isSatTmccLocked(); }, 30, 100);
-    sat_->selectSatTsid(tsid);
+    // TMCC がロックしても、一覧がすぐには埋まらないことがある（recgvmvp #1 と同じ）。
+    // ロックして空きでない TSID が 1 つ以上見えるまで、100 ms ごとに最大 3 秒読み直す。
+    uint16_t raw[12]{};
+    const bool ok = waitUntil([&]() {
+        if (!sat_->isSatTmccLocked()) return false;
+        sat_->readSatTmccTsids(raw);
+        ids.assign(raw, raw + 12);
+        return CountTmccTsids(ids) > 0;
+    }, 30, 100);
+    return ok;
+}
+
+bool Mtvu3sDevice::SelectSatTsid(uint16_t tsid) {
+    sat_->setSatTsid(tsid);
     waitUntil([this]() { return sat_->isSatSlotLocked(); }, 30, 100);
     return true;
+}
+
+bool Mtvu3sDevice::TuneBS(uint32_t freq_khz, int slot) {
+    band_ = Band::BS;
+    std::vector<uint16_t> ids;
+    if (!TuneSatAndReadTmcc(freq_khz, ids)) return false;
+    // 無い番目を頼むと、復調部は黙って別の TS を出すので、ここで失敗にする
+    uint16_t tsid = 0;
+    if (!PickBsTsidBySlot(slot, ids, tsid)) return false;
+    return SelectSatTsid(tsid);
+}
+
+bool Mtvu3sDevice::TuneCS(uint32_t freq_khz, uint16_t want) {
+    band_ = Band::CS;
+    std::vector<uint16_t> ids;
+    if (!TuneSatAndReadTmcc(freq_khz, ids)) return false;
+    uint16_t tsid = 0;
+    if (!MatchTsid(want, ids, tsid)) return false;
+    return SelectSatTsid(tsid);
 }
 
 bool Mtvu3sDevice::GetCNR(float& cnr_db) {

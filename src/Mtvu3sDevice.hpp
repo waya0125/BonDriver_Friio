@@ -9,6 +9,7 @@
 #include "I2cBus.hpp"
 #include "Mtvu3sCardReader.hpp"
 #include "Qm1d1c0042.hpp"
+#include "SatTsid.hpp"
 #include "Tc90522.hpp"
 #include "WinUsbDevice.hpp"
 
@@ -35,7 +36,11 @@ public:
     bool IsOpen() const { return usb_.IsOpen(); }
 
     bool TuneUHF(uint32_t freq_khz);
-    bool TuneSat(uint32_t freq_khz, uint16_t tsid);
+    // BS: slot はそのトランスポンダーの何番目の TS か（TMCC の一覧から空きを除いた並び）。
+    // その番目の TS が無ければ false。
+    bool TuneBS(uint32_t freq_khz, int slot);
+    // 110 度 CS: TSID で選ぶ（ネットワークのビットは無視して当てる）。無ければ false。
+    bool TuneCS(uint32_t freq_khz, uint16_t tsid);
     bool GetCNR(float& cnr_db);
 
     bool StartStream(WinUsbDevice::ChunkCallback cb);
@@ -60,6 +65,9 @@ private:
     bool WriteReg(uint8_t reg, uint8_t val);
     bool ReadReg(uint8_t reg, uint8_t& val);
     void Idle();
+    // 衛星の周波数に合わせて TMCC の TSID の一覧を読む。空なら読み直す。読めなければ false。
+    bool TuneSatAndReadTmcc(uint32_t freq_khz, std::vector<uint16_t>& ids);
+    bool SelectSatTsid(uint16_t tsid);
 
     WinUsbDevice usb_;
     mutable std::mutex io_mu_;
