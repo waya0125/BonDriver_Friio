@@ -36,7 +36,10 @@ public:
 	bool isSatTmccLocked();
 	bool isSatSlotLocked();
 
-	void selectSatTsid(uint16_t reqTsid);
+	// TMCC にある TSID の一覧（12 個。空きは 0xffff・0xfff8 など）を読む。
+	void readSatTmccTsids(uint16_t out[12]);
+	// 出す TS を TSID で選ぶ（書いた後に復調部をリセットする）。
+	void setSatTsid(uint16_t tsid);
 
 	float getTerCnr();
 	float getSatCnr();

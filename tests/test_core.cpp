@@ -5,6 +5,7 @@
 #include "B25Decoder.hpp"
 #include "Mtvu3sCardReader.hpp"
 #include "Multi2.hpp"
+#include "SatTsid.hpp"
 #include "Settler.hpp"
 
 #include <algorithm>
@@ -382,6 +383,46 @@ void TestB25DecoderWithMtvu3sCard() {
     assert(!b25.IsSynced());
 }
 
+// recfriio issue #4 のログにある実際の TMCC の一覧で、BSnn_s の s を並びとして選ぶこと。
+void TestPickBsTsidBySlot() {
+    using friio::PickBsTsidBySlot;
+    const std::vector<uint16_t> bs09 = {0x4090, 0x4092, 0xffff, 0xffff, 0xfff8, 0xffff,
+                                        0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
+    const std::vector<uint16_t> bs23 = {0x4770, 0x4971, 0xfff9, 0x4973, 0xffff, 0xffff,
+                                        0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
+    const std::vector<uint16_t> bs15 = {0x40f1, 0x40f2, 0x48f3, 0xffff, 0xffff, 0xffff,
+                                        0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
+    uint16_t id = 0;
+    assert(PickBsTsidBySlot(0, bs09, id) && id == 0x4090);
+    assert(PickBsTsidBySlot(1, bs09, id) && id == 0x4092); // 以前は 0x4091（無い）を頼んでいた
+    assert(!PickBsTsidBySlot(2, bs09, id));
+    assert(PickBsTsidBySlot(0, bs23, id) && id == 0x4770);
+    assert(PickBsTsidBySlot(1, bs23, id) && id == 0x4971); // 空き（0xfff9）は数えない
+    assert(PickBsTsidBySlot(2, bs23, id) && id == 0x4973);
+    assert(!PickBsTsidBySlot(3, bs23, id));
+    // BS15 は 1 つずらさなくても、並びで数えれば conf どおりになる
+    assert(PickBsTsidBySlot(0, bs15, id) && id == 0x40f1);
+    assert(PickBsTsidBySlot(2, bs15, id) && id == 0x48f3);
+    assert(!PickBsTsidBySlot(-1, bs15, id));
+    const std::vector<uint16_t> empty(12, 0xffff);
+    assert(!PickBsTsidBySlot(0, empty, id));
+    assert(friio::CountTmccTsids(bs23) == 3);
+    assert(friio::CountTmccTsids(empty) == 0);
+    assert(friio::CountTmccTsids(std::vector<uint16_t>(12, 0x0000)) == 0);
+}
+
+void TestMatchTsid() {
+    using friio::MatchTsid;
+    const std::vector<uint16_t> cs = {0x7040, 0xffff};
+    uint16_t id = 0;
+    assert(MatchTsid(0x7040, cs, id) && id == 0x7040);
+    assert(MatchTsid(0x6040, cs, id) && id == 0x7040); // ネットワークのビットを無視
+    assert(!MatchTsid(0x7060, cs, id));
+    const std::vector<uint16_t> bs = {0x4770, 0x4971};
+    assert(MatchTsid(0x4171, bs, id) && id == 0x4971); // 登録年のビットを無視
+    assert(!MatchTsid(0, bs, id));
+}
+
 } // namespace
 
 int main() {
@@ -392,6 +433,8 @@ int main() {
     TestMtvu3sCardBadLrcRequiresReset();
     TestMtvu3sCardRejectsShortAtrTransfer();
     TestB25DecoderWithMtvu3sCard();
+    TestPickBsTsidBySlot();
+    TestMatchTsid();
     std::cout << "ALL FRIIO CORE TESTS PASSED\n";
     return 0;
 }

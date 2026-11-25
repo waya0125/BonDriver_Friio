@@ -177,16 +177,15 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
             ok = u3s_.TuneUHF(freq_khz);
         } else if (dwSpace == 1 && dwChannel < 12 * 4) {
             const uint32_t tp = dwChannel / 4; // 0..11 => BS01..BS23
-            const uint32_t bs_num = tp * 2 + 1;
-            uint32_t slot = dwChannel % 4;
-            if (bs_num == 15) slot += 1;
+            // BSnn_s の s は、そのトランスポンダーの何番目の TS か（TMCC の一覧から空きを除いた並び）。
+            // 以前は TSID を 0x4000 | nn<<4 | s（BS15 だけ s+1）と組み立てていたが、再編で TS の番号が
+            // 飛んだトランスポンダー（BS09・BS23 など）や登録年のビットが立つ TS で別の TS が出ていた。
+            const int slot = static_cast<int>(dwChannel % 4);
             const uint32_t freq_khz = 1049480u + tp * 38360u;
-            const uint16_t tsid = static_cast<uint16_t>(0x4000u | (bs_num << 4) | slot);
-            ok = u3s_.TuneSat(freq_khz, tsid);
+            ok = u3s_.TuneBS(freq_khz, slot);
         } else if (dwSpace == 2 && dwChannel < 12) {
             const uint32_t freq_khz = 1613000u + dwChannel * 40000u;
-            const uint16_t tsid = kCsTsids[dwChannel];
-            ok = u3s_.TuneSat(freq_khz, tsid);
+            ok = u3s_.TuneCS(freq_khz, kCsTsids[dwChannel]);
         } else {
             return FALSE;
         }

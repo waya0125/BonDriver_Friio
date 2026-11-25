@@ -11,6 +11,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_library(friio_core STATIC
     src/AsieStreamCipher.cpp
     src/Tc90522.cpp
+    src/SatTsid.cpp
     src/Fc0013.cpp
     src/Qm1d1c0042.cpp
     src/Settler.cpp
