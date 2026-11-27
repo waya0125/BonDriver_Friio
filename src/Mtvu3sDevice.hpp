@@ -13,6 +13,8 @@
 #include "Tc90522.hpp"
 #include "WinUsbDevice.hpp"
 
+#include <bcrypt.h>
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -41,6 +43,8 @@ public:
     bool TuneBS(uint32_t freq_khz, int slot);
     // 110 度 CS: TSID で選ぶ（ネットワークのビットは無視して当てる）。無ければ false。
     bool TuneCS(uint32_t freq_khz, uint16_t tsid);
+    // BS / CS110 共通: TSID を直接指定して選ぶ（INI [CHANNEL] 用）。無ければ false。
+    bool TuneSatByTsid(uint32_t freq_khz, uint16_t tsid);
     bool GetCNR(float& cnr_db);
 
     bool StartStream(WinUsbDevice::ChunkCallback cb);
@@ -68,6 +72,8 @@ private:
     // 衛星の周波数に合わせて TMCC の TSID の一覧を読む。空なら読み直す。読めなければ false。
     bool TuneSatAndReadTmcc(uint32_t freq_khz, std::vector<uint16_t>& ids);
     bool SelectSatTsid(uint16_t tsid);
+    void InitCngAes();
+    void CloseCngAes();
 
     WinUsbDevice usb_;
     mutable std::mutex io_mu_;
@@ -76,6 +82,8 @@ private:
     std::unique_ptr<Tc90522> sat_;
     std::unique_ptr<Fc0013> ter_tuner_;
     std::unique_ptr<Qm1d1c0042> sat_tuner_;
+    BCRYPT_ALG_HANDLE aes_alg_ = nullptr;
+    BCRYPT_KEY_HANDLE aes_key_ = nullptr;
     Aes128EcbDecryptor aes_;
     Band band_ = Band::UHF;
     std::mutex bcas_mu_;

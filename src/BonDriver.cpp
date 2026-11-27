@@ -8,19 +8,25 @@
 #include <chrono>
 #include <cstring>
 #include <cwctype>
+#include <fstream>
+#include <iterator>
 
 namespace friio {
 
 namespace {
 
-constexpr uint16_t kCsTsids[12] = {
-    0x6020, 0x7040, 0x7060, 0x6080, 0x60a0, 0x70c0,
-    0x70e0, 0x7100, 0x7120, 0x7140, 0x7160, 0x7180,
-};
-
 std::wstring ToLower(std::wstring s) {
     std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
     return s;
+}
+
+std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+    return out;
 }
 
 } // namespace
@@ -63,6 +69,26 @@ void BonDriverFriio::LoadIni(HMODULE module) {
     wchar_t fw_buf[MAX_PATH]{};
     GetPrivateProfileStringW(L"FRIIO", L"FirmwarePath", default_fw.c_str(), fw_buf, MAX_PATH, ini.c_str());
     cfg_.firmware_path = fw_buf;
+
+    // [CHANNEL] セクションがあれば衛星（BS / CS110）選局表を読み込む（無ければ既定表）
+    sat_table_ = SatChannelTable::Default();
+    HANDLE hf = CreateFileW(ini.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER fsize{};
+        if (GetFileSizeEx(hf, &fsize) && fsize.QuadPart > 0 && fsize.QuadPart <= 1024 * 1024) {
+            std::string content(static_cast<size_t>(fsize.QuadPart), '\0');
+            DWORD read_bytes = 0;
+            if (ReadFile(hf, content.data(), static_cast<DWORD>(content.size()), &read_bytes, nullptr)) {
+                content.resize(read_bytes);
+                SatChannelTable parsed;
+                if (SatChannelTable::ParseIniText(content, parsed)) {
+                    sat_table_ = std::move(parsed);
+                }
+            }
+        }
+        CloseHandle(hf);
+    }
 }
 
 const BOOL BonDriverFriio::OpenTuner(void) {
@@ -175,17 +201,14 @@ const BOOL BonDriverFriio::SetChannel(const DWORD dwSpace, const DWORD dwChannel
         if (dwSpace == 0 && dwChannel < 50) {
             const uint32_t freq_khz = 473143u + 6000u * dwChannel;
             ok = u3s_.TuneUHF(freq_khz);
-        } else if (dwSpace == 1 && dwChannel < 12 * 4) {
-            const uint32_t tp = dwChannel / 4; // 0..11 => BS01..BS23
-            // BSnn_s の s は、そのトランスポンダーの何番目の TS か（TMCC の一覧から空きを除いた並び）。
-            // 以前は TSID を 0x4000 | nn<<4 | s（BS15 だけ s+1）と組み立てていたが、再編で TS の番号が
-            // 飛んだトランスポンダー（BS09・BS23 など）や登録年のビットが立つ TS で別の TS が出ていた。
-            const int slot = static_cast<int>(dwChannel % 4);
-            const uint32_t freq_khz = 1049480u + tp * 38360u;
-            ok = u3s_.TuneBS(freq_khz, slot);
-        } else if (dwSpace == 2 && dwChannel < 12) {
-            const uint32_t freq_khz = 1613000u + dwChannel * 40000u;
-            ok = u3s_.TuneCS(freq_khz, kCsTsids[dwChannel]);
+        } else if (dwSpace >= 1) {
+            const auto* ch = sat_table_.Channel(dwSpace - 1, dwChannel);
+            if (!ch) return FALSE;
+            if (ch->slot >= 0) {
+                ok = u3s_.TuneBS(ch->freq_khz, ch->slot);
+            } else {
+                ok = u3s_.TuneSatByTsid(ch->freq_khz, ch->tsid);
+            }
         } else {
             return FALSE;
         }
@@ -318,6 +341,13 @@ void BonDriverFriio::PushOutput(std::vector<uint8_t>&& packets) {
 }
 
 void BonDriverFriio::OnRawChunk(const uint8_t* data, size_t len) {
+    // USB Isochronous 転送エラーによるギャップ通知: 端数バッファを捨てて 0x47 再同期へ
+    if (data == nullptr || len == 0) {
+        rest_.clear();
+        if (!cfg_.no_settle) settler_.ResetRun();
+        return;
+    }
+
     auto packets = AlignAndDecrypt(data, len);
     if (!cfg_.no_settle && !packets.empty()) {
         packets = settler_.Feed(packets.data(), packets.size());
@@ -402,9 +432,10 @@ const BOOL BonDriverFriio::IsTunerOpening(void) {
 LPCTSTR BonDriverFriio::EnumTuningSpace(const DWORD dwSpace) {
     if (active_model_ == Model::Mtvu3s) {
         if (dwSpace == 0) return L"UHF";
-        if (dwSpace == 1) return L"BS";
-        if (dwSpace == 2) return L"CS";
-        return nullptr;
+        const auto* sp = sat_table_.Space(dwSpace - 1);
+        if (!sp) return nullptr;
+        space_name_buf_ = Utf8ToWide(sp->name);
+        return space_name_buf_.c_str();
     }
     if (dwSpace == 0) return L"UHF";
     if (dwSpace == 1) return L"CATV";
@@ -416,13 +447,16 @@ LPCTSTR BonDriverFriio::EnumChannelName(const DWORD dwSpace, const DWORD dwChann
     if (active_model_ == Model::Mtvu3s) {
         if (dwSpace == 0 && dwChannel < 50) {
             swprintf(buf, 32, L"%luch", 13 + dwChannel);
-        } else if (dwSpace == 1 && dwChannel < 48) {
-            swprintf(buf, 32, L"BS%02lu_%lu", (dwChannel / 4) * 2 + 1, dwChannel % 4);
-        } else if (dwSpace == 2 && dwChannel < 12) {
-            swprintf(buf, 32, L"CS%lu", (dwChannel + 1) * 2);
-        } else {
-            return nullptr;
+            channel_name_buf_ = buf;
+            return channel_name_buf_.c_str();
         }
+        if (dwSpace >= 1) {
+            const auto* ch = sat_table_.Channel(dwSpace - 1, dwChannel);
+            if (!ch) return nullptr;
+            channel_name_buf_ = Utf8ToWide(ch->name);
+            return channel_name_buf_.c_str();
+        }
+        return nullptr;
     } else {
         if (dwSpace == 0 && dwChannel < 50) {
             swprintf(buf, 32, L"%luch", 13 + dwChannel);

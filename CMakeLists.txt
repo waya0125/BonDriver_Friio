@@ -18,6 +18,7 @@ add_library(friio_core STATIC
     src/Multi2.cpp
     src/B25Decoder.cpp
     src/Mtvu3sCardReader.cpp
+    src/SatChannelTable.cpp
 )
 target_include_directories(friio_core PUBLIC src include)
 
@@ -30,7 +31,7 @@ if(WIN32)
         src/DllMain.cpp
         src/BonDriver_Friio.def
     )
-    target_link_libraries(BonDriver_Friio PRIVATE friio_core winusb setupapi ole32 advapi32)
+    target_link_libraries(BonDriver_Friio PRIVATE friio_core winusb setupapi ole32 advapi32 bcrypt)
     target_compile_definitions(BonDriver_Friio PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     set_target_properties(BonDriver_Friio PROPERTIES
         PREFIX ""

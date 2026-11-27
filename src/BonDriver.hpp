@@ -8,6 +8,7 @@
 #include "AsieStreamCipher.hpp"
 #include "B25Decoder.hpp"
 #include "Mtvu3sDevice.hpp"
+#include "SatChannelTable.hpp"
 #include "Settler.hpp"
 #include "Ut100bDevice.hpp"
 
@@ -81,7 +82,9 @@ private:
     DWORD cur_space_ = 0;
     DWORD cur_channel_ = 0;
     std::wstring tuner_name_ = L"BonDriver_Friio";
+    std::wstring space_name_buf_;
     std::wstring channel_name_buf_;
+    SatChannelTable sat_table_ = SatChannelTable::Default();
 
     // ストリーム処理（ストリームスレッド専用）
     size_t stale_drop_ = 0;

@@ -337,21 +337,48 @@ bool WinUsbDevice::StartAsyncIsochStream(uint8_t ep, size_t num_urbs, size_t iso
             BOOL ok = WinUsb_GetOverlappedResult(winusb_, &s.ov, &dummy, FALSE);
             s.pending = false;
             ResetEvent(events[ready_idx]);
+            std::vector<std::vector<uint8_t>> segments;
+            bool had_gap = false;
             packed.clear();
             if (ok && streaming_.load()) {
                 const uint8_t* base = ring_buf.data() + s.offset;
                 for (const auto& d : s.descs) {
-                    if (d.Status == 0 && d.Length > 0 && d.Offset + d.Length <= urb_bytes) {
+                    if (d.Status != 0 || d.Offset > urb_bytes || d.Length > urb_bytes - d.Offset) {
+                        if (!packed.empty()) {
+                            segments.push_back(packed);
+                            packed.clear();
+                        }
+                        // 空ベクタをギャップ（欠落）の印として記録
+                        if (segments.empty() || !segments.back().empty()) {
+                            segments.emplace_back();
+                        }
+                        had_gap = true;
+                    } else if (d.Length > 0) {
                         packed.insert(packed.end(), base + d.Offset, base + d.Offset + d.Length);
                     }
                 }
+                if (!packed.empty()) {
+                    segments.push_back(packed);
+                }
             } else if (!ok) {
                 resync = true;
+                had_gap = true;
             }
             if (streaming_.load()) submit(s);
-            if (!packed.empty() && streaming_.load()) {
-                cb(packed.data(), packed.size());
+            if (streaming_.load()) {
+                if (!ok) {
+                    cb(nullptr, 0);
+                } else {
+                    for (const auto& seg : segments) {
+                        if (seg.empty()) {
+                            cb(nullptr, 0);
+                        } else {
+                            cb(seg.data(), seg.size());
+                        }
+                    }
+                }
             }
+            (void)had_gap;
         }
 
         WinUsb_AbortPipe(winusb_, ep);

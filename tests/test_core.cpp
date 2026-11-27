@@ -5,6 +5,7 @@
 #include "B25Decoder.hpp"
 #include "Mtvu3sCardReader.hpp"
 #include "Multi2.hpp"
+#include "SatChannelTable.hpp"
 #include "SatTsid.hpp"
 #include "Settler.hpp"
 
@@ -423,6 +424,47 @@ void TestMatchTsid() {
     assert(!MatchTsid(0, bs, id));
 }
 
+void TestSatChannelTable() {
+    auto def = friio::SatChannelTable::Default();
+    assert(def.SpaceCount() == 2);
+    assert(def.Space(0)->name == "BS" && def.Space(0)->channels.size() == 48);
+    assert(def.Space(1)->name == "CS" && def.Space(1)->channels.size() == 12);
+    // 既定 BS15_0 は TMCC スロット順（slot=0, tsid=0）
+    const auto* bs15_0 = def.Channel(0, 28);
+    assert(bs15_0 != nullptr && bs15_0->name == "BS15_0" && bs15_0->slot == 0 && bs15_0->tsid == 0 &&
+           bs15_0->freq_khz == 1318000u);
+    // CS2 は 1613000 kHz, TSID 0x6020
+    const auto* cs2 = def.Channel(1, 0);
+    assert(cs2 != nullptr && cs2->name == "CS2" && cs2->slot == -1 && cs2->tsid == 0x6020 &&
+           cs2->freq_khz == 1613000u);
+
+    const std::string ini =
+        "\xef\xbb\xbf"
+        "[FRIIO]\r\n"
+        "EnableB25=1\r\n"
+        "[CHANNEL]\r\n"
+        "; comment\r\n"
+        "$BS\t0\r\n"
+        "$CS110\t1\r\n"
+        "BS15/TS0 NHK BS\t0\t0\t7\t16625\r\n"
+        "ND02\t1\t0\t12\t24608\r\n"
+        "INVALID\t0\t1\t99\t16400\r\n";
+    friio::SatChannelTable parsed;
+    assert(friio::SatChannelTable::ParseIniText(ini, parsed));
+    assert(parsed.SpaceCount() == 2);
+    assert(parsed.Space(0)->name == "BS" && parsed.Space(0)->channels.size() == 1);
+    assert(parsed.Channel(0, 0)->name == "BS15/TS0 NHK BS");
+    assert(parsed.Channel(0, 0)->slot == -1 && parsed.Channel(0, 0)->freq_khz == 1318000u &&
+           parsed.Channel(0, 0)->tsid == 16625);
+    assert(parsed.Space(1)->name == "CS110" && parsed.Space(1)->channels.size() == 1);
+    assert(parsed.Channel(1, 0)->slot == -1 && parsed.Channel(1, 0)->freq_khz == 1613000u &&
+           parsed.Channel(1, 0)->tsid == 24608);
+
+    // [CHANNEL] が無い INI は false（既定表へフォールバック）
+    friio::SatChannelTable empty;
+    assert(!friio::SatChannelTable::ParseIniText("[FRIIO]\nModel=u3s\n", empty));
+}
+
 } // namespace
 
 int main() {
@@ -435,6 +477,7 @@ int main() {
     TestB25DecoderWithMtvu3sCard();
     TestPickBsTsidBySlot();
     TestMatchTsid();
+    TestSatChannelTable();
     std::cout << "ALL FRIIO CORE TESTS PASSED\n";
     return 0;
 }

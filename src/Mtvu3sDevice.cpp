@@ -62,6 +62,7 @@ bool Mtvu3sDevice::Open(int device_index) {
     sat_tuner_ = std::make_unique<Qm1d1c0042>(sat_->tunerBus(), 0xc0);
     const uint8_t zero_key[16]{};
     aes_.setKey(zero_key);
+    InitCngAes();
 
     Mtvu3sCardIO card_io;
     card_io.read_reg = [this](uint8_t reg, uint8_t& val) { return ReadReg(reg, val); };
@@ -155,6 +156,15 @@ bool Mtvu3sDevice::TuneCS(uint32_t freq_khz, uint16_t want) {
     return SelectSatTsid(tsid);
 }
 
+bool Mtvu3sDevice::TuneSatByTsid(uint32_t freq_khz, uint16_t want) {
+    band_ = (want & 0xf000u) == 0x4000u ? Band::BS : Band::CS;
+    std::vector<uint16_t> ids;
+    if (!TuneSatAndReadTmcc(freq_khz, ids)) return false;
+    uint16_t tsid = 0;
+    if (!MatchTsid(want, ids, tsid)) return false;
+    return SelectSatTsid(tsid);
+}
+
 bool Mtvu3sDevice::GetCNR(float& cnr_db) {
     if (band_ == Band::UHF) {
         cnr_db = ter_->getTerCnr();
@@ -182,7 +192,44 @@ void Mtvu3sDevice::Idle() {
     usb_.SetAlternateSetting(0);
 }
 
+void Mtvu3sDevice::InitCngAes() {
+    CloseCngAes();
+    if (BCryptOpenAlgorithmProvider(&aes_alg_, BCRYPT_AES_ALGORITHM, nullptr, 0) < 0) {
+        aes_alg_ = nullptr;
+        return;
+    }
+    wchar_t mode[] = BCRYPT_CHAIN_MODE_ECB;
+    if (BCryptSetProperty(aes_alg_, BCRYPT_CHAINING_MODE,
+                          reinterpret_cast<PUCHAR>(mode), sizeof(mode), 0) < 0) {
+        CloseCngAes();
+        return;
+    }
+    UCHAR zero_key[16]{};
+    if (BCryptGenerateSymmetricKey(aes_alg_, &aes_key_, nullptr, 0,
+                                   zero_key, sizeof(zero_key), 0) < 0) {
+        CloseCngAes();
+    }
+}
+
+void Mtvu3sDevice::CloseCngAes() {
+    if (aes_key_) {
+        BCryptDestroyKey(aes_key_);
+        aes_key_ = nullptr;
+    }
+    if (aes_alg_) {
+        BCryptCloseAlgorithmProvider(aes_alg_, 0);
+        aes_alg_ = nullptr;
+    }
+}
+
 void Mtvu3sDevice::DescramblePacket(uint8_t pkt[188]) const {
+    if (aes_key_) {
+        ULONG decrypted = 0;
+        if (BCryptDecrypt(aes_key_, pkt + 12, 176, nullptr, nullptr, 0,
+                          pkt + 12, 176, &decrypted, 0) >= 0 && decrypted == 176) {
+            return;
+        }
+    }
     for (int b = 0; b < 11; ++b) {
         aes_.decryptBlock(pkt + 12 + b * 16);
     }
@@ -207,6 +254,7 @@ void Mtvu3sDevice::Close() {
         std::lock_guard<std::mutex> lk(bcas_mu_);
         card_.reset();
     }
+    CloseCngAes();
     usb_.Close();
 }
 
