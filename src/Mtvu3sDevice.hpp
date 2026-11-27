@@ -11,6 +11,7 @@
 #include "Qm1d1c0042.hpp"
 #include "SatTsid.hpp"
 #include "Tc90522.hpp"
+#include "UsbSelect.hpp"
 #include "WinUsbDevice.hpp"
 
 #include <bcrypt.h>
@@ -48,6 +49,8 @@ public:
     bool GetCNR(float& cnr_db);
 
     bool StartStream(WinUsbDevice::ChunkCallback cb);
+    // 直近の StartStream で使った Isochronous パケットサイズ
+    size_t IsochPacketSize() const { return iso_packet_size_; }
     void StopStream();
 
     void DescramblePacket(uint8_t pkt[188]) const;
@@ -75,7 +78,10 @@ private:
     void InitCngAes();
     void CloseCngAes();
 
+    static constexpr uint8_t kIsochEp = 0x84;
+
     WinUsbDevice usb_;
+    size_t iso_packet_size_ = kDefaultIsochPacketSize;
     mutable std::mutex io_mu_;
     std::unique_ptr<Em28178Bus> bus_;
     std::unique_ptr<Tc90522> ter_;

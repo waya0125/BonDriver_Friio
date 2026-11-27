@@ -8,6 +8,7 @@
 #include "SatChannelTable.hpp"
 #include "SatTsid.hpp"
 #include "Settler.hpp"
+#include "UsbSelect.hpp"
 
 #include <algorithm>
 #include <array>
@@ -465,6 +466,86 @@ void TestSatChannelTable() {
     assert(!friio::SatChannelTable::ParseIniText("[FRIIO]\nModel=u3s\n", empty));
 }
 
+// 候補ごとの開いた結果を並べて SelectDevice を回し、採用番号と閉じた候補を返す
+int RunSelect(const std::vector<friio::DeviceProbe>& results, int device_index,
+              std::vector<size_t>* released = nullptr, std::vector<size_t>* probed = nullptr) {
+    std::vector<size_t> rel;
+    std::vector<size_t> prb;
+    const int got = friio::SelectDevice(
+        results.size(), device_index,
+        [&](size_t i) { prb.push_back(i); return results[i]; },
+        [&](size_t i) { rel.push_back(i); });
+    if (released) *released = rel;
+    if (probed) *probed = prb;
+    return got;
+}
+
+void TestSelectDevice() {
+    using P = friio::DeviceProbe;
+    std::vector<size_t> rel;
+    std::vector<size_t> prb;
+
+    // 候補なし
+    assert(RunSelect({}, -1) == -1);
+    assert(RunSelect({}, 0) == -1);
+
+    // -1: 使用中・数えない候補を飛ばして、最初に開けた台
+    assert(RunSelect({P::NotTuner, P::Busy, P::Opened, P::Opened}, -1, &rel, &prb) == 2);
+    assert(rel.empty());
+    assert((prb == std::vector<size_t>{0, 1, 2}));
+    // -1: 全部使用中なら失敗
+    assert(RunSelect({P::Busy, P::Busy}, -1) == -1);
+    // -2 など負の値も自動選択
+    assert(RunSelect({P::Busy, P::Opened}, -2) == 1);
+
+    // 固定: 使用中の台も番号に数える（他の台にずらさない）
+    assert(RunSelect({P::Busy, P::Opened}, 1, &rel) == 1);
+    assert(rel.empty());
+    assert(RunSelect({P::Busy, P::Opened}, 0) == -1);
+    // 固定: 開けた手前の台は閉じる
+    assert(RunSelect({P::Opened, P::Opened, P::Opened}, 2, &rel, &prb) == 2);
+    assert((rel == std::vector<size_t>{0, 1}));
+    assert((prb == std::vector<size_t>{0, 1, 2}));
+    // 固定: WinUSB でない親デバイスなどは数えない
+    assert(RunSelect({P::NotTuner, P::Opened, P::NotTuner, P::Opened}, 1, &rel) == 3);
+    assert((rel == std::vector<size_t>{1}));
+    // 固定: 範囲外
+    assert(RunSelect({P::Opened}, 1, &rel) == -1);
+    assert((rel == std::vector<size_t>{0}));
+}
+
+void TestParseDeviceIndex() {
+    using friio::ParseDeviceIndex;
+    assert(ParseDeviceIndex(L"0", -1) == 0);
+    assert(ParseDeviceIndex(L"2", -1) == 2);
+    assert(ParseDeviceIndex(L"-1", 0) == -1);
+    assert(ParseDeviceIndex(L" -1 ", 0) == -1);
+    assert(ParseDeviceIndex(L"+1", -1) == 1);
+    assert(ParseDeviceIndex(L"\t3\r", -1) == 3);
+    // 空・数字でない・範囲外は既定値
+    assert(ParseDeviceIndex(L"", -1) == -1);
+    assert(ParseDeviceIndex(L"-", -1) == -1);
+    assert(ParseDeviceIndex(L"auto", -1) == -1);
+    assert(ParseDeviceIndex(L"1a", -1) == -1);
+    assert(ParseDeviceIndex(L"99999999999", -1) == -1);
+}
+
+void TestChooseIsochPacketSize() {
+    using friio::ChooseIsochPacketSize;
+    using friio::kDefaultIsochPacketSize;
+    assert(ChooseIsochPacketSize(true, 940, kDefaultIsochPacketSize) == 940);
+    assert(ChooseIsochPacketSize(true, 3072, kDefaultIsochPacketSize) == 3072);
+    assert(ChooseIsochPacketSize(true, 49152, kDefaultIsochPacketSize) == 49152);
+    // 取得失敗・0・範囲外は 940 にフォールバック
+    assert(ChooseIsochPacketSize(false, 3072, kDefaultIsochPacketSize) == 940);
+    assert(ChooseIsochPacketSize(true, 0, kDefaultIsochPacketSize) == 940);
+    assert(ChooseIsochPacketSize(true, 49153, kDefaultIsochPacketSize) == 940);
+
+    assert(std::strcmp(friio::UsbSpeedName(3), "HighSpeed") == 0);
+    assert(std::strcmp(friio::UsbSpeedName(2), "FullSpeed") == 0);
+    assert(std::strcmp(friio::UsbSpeedName(0), "Unknown") == 0);
+}
+
 } // namespace
 
 int main() {
@@ -478,6 +559,9 @@ int main() {
     TestPickBsTsidBySlot();
     TestMatchTsid();
     TestSatChannelTable();
+    TestSelectDevice();
+    TestParseDeviceIndex();
+    TestChooseIsochPacketSize();
     std::cout << "ALL FRIIO CORE TESTS PASSED\n";
     return 0;
 }

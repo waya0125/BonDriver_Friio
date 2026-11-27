@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <string>
 #include <thread>
 
 namespace friio {
@@ -114,17 +115,23 @@ bool Ut100bDevice::LoadFirmwareIfNeeded(const std::wstring& fw_path, uint16_t st
 
 bool Ut100bDevice::Open(int device_index) {
     auto paths = WinUsbDevice::Enumerate(kUt100bVid, kUt100bPid);
-    int matched = 0;
-    for (const auto& p : paths) {
-        if (!usb_.Open(p)) continue;
-        if (matched == device_index) {
-            usb_.SetAlternateSetting(0);
-            return true;
-        }
-        usb_.Close();
-        ++matched;
+    const int chosen = usb_.OpenByIndex(paths, device_index);
+    if (chosen < 0) return false;
+    usb_.SetAlternateSetting(0);
+
+    // Bulk 転送パラメータの確認用に、接続速度と EP 0x81 の wMaxPacketSize をログへ出す
+    uint8_t speed = 0;
+    const bool speed_ok = usb_.QueryDeviceSpeed(speed);
+    WinUsbPipeInfo pipe;
+    const bool pipe_ok = usb_.QueryPipeInfo(0, kBulkEp, pipe);
+    DebugLog("UT100B: opened DeviceIndex=%d (candidate %d of %u), speed=%s, EP 0x%02x wMaxPacketSize=%s",
+             device_index, chosen, static_cast<unsigned>(paths.size()),
+             speed_ok ? UsbSpeedName(speed) : "unavailable", kBulkEp,
+             pipe_ok ? std::to_string(pipe.max_packet_size).c_str() : "unavailable");
+    if (speed_ok && speed != 3) {
+        DebugLog("UT100B: not connected at HighSpeed; the TS bitrate may not fit");
     }
-    return false;
+    return true;
 }
 
 bool Ut100bDevice::Send(uint8_t req, uint16_t val, uint16_t idx, std::vector<uint8_t>& out, uint16_t len) {
@@ -323,7 +330,7 @@ bool Ut100bDevice::GetCNR(float& cnr_db) {
 }
 
 bool Ut100bDevice::StartStream(WinUsbDevice::ChunkCallback cb) {
-    return usb_.StartAsyncBulkStream(0x81, 32, 16384, std::move(cb));
+    return usb_.StartAsyncBulkStream(kBulkEp, 32, kBulkUrbSize, std::move(cb));
 }
 
 void Ut100bDevice::StopStream() {

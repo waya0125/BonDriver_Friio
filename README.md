@@ -46,6 +46,8 @@ TVTest・EDCB では、C++ の ABI を合わせるために、この MSVC でビ
 - 本体のスロットのカードで復号する場合（`EnableB25=1`、既定）は、TVTest・EDCB 側の B-CAS カードリーダーの設定を「なし」にします。  
   外付けのカードリーダーを使う場合は、`EnableB25=0` にします。
 - 2 機種を一緒につなぐ場合は、`Model` で機種を決められます。
+- 同じ機種を複数台つなぐ場合は、DLL と INI を `BonDriver_Friio-0.dll` / `BonDriver_Friio-0.ini` のように台数分コピーし、  
+  全部 `DeviceIndex=-1`（空きの台を順に使う）にするか、`DeviceIndex=0`・`1`… と台を固定します。
 
 ### 設定（`BonDriver_Friio.ini`）
 
@@ -56,8 +58,11 @@ TVTest・EDCB では、C++ の ABI を合わせるために、この MSVC でビ
 ; 使用する機種: auto / ut100b / u3s（既定 auto）
 Model=auto
 
-; 同じ機種を複数接続している場合のインデックス（0 始まり）
-DeviceIndex=0
+; 同じ機種を複数接続している場合の使う台
+;   -1 : 空きデバイス自動選択（他のアプリが使っていない最初の台を開く、既定）
+;   0〜: 指定の台に固定（0 始まり）。その台が使用中なら他の台にはずらさず失敗します
+; 台の並びは Windows のデバイスパス順で、使用中の台も数えます
+DeviceIndex=-1
 
 ; 内蔵 B-CAS スロットで ARIB STD-B25 復号を行う（1=有効 / 0=無効、既定 1）
 ; ※QRS-UT100B・MonsterTV U3S 両対応。外付け PC/SC リーダーを使う場合は 0 に設定
@@ -97,6 +102,8 @@ cmake --build build-x86 --config Release
 ## 注意事項
 
 - MonsterTV U3S は Windows 8.1 以降が必要です（Isochronous 転送に `WinUsb_ReadIsochPipeAsap` を使うため）。
+- MonsterTV U3S の Isochronous パケットサイズは `WinUsb_QueryPipeEx` の `MaximumBytesPerInterval` から決めます（取れなければ従来の 940 バイト）。  
+  開いた台・接続速度・パイプ情報は `OutputDebugString` に `[BonDriver_Friio]` で始まる行として出るので、[DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview) などで確認できます。
 - 機種ごとの注意は各機種の docs にあります。
 
 ## ライセンス

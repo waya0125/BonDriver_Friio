@@ -4,11 +4,16 @@
 
 #include "WinUsbDevice.hpp"
 
+#include "UsbSelect.hpp"
+
 #include <objbase.h>
 #include <setupapi.h>
 #include <usbiodef.h>
 
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
 #include <cwctype>
 #include <set>
 
@@ -54,7 +59,40 @@ struct WinUsbIsochApi {
     }
 };
 
+// Win8.1+ の WinUsb_QueryPipeEx も動的解決する（winusbio.h の WINUSB_PIPE_INFORMATION_EX と同じ並び）
+struct PipeInfoEx {
+    USBD_PIPE_TYPE PipeType;
+    UCHAR PipeId;
+    USHORT MaximumPacketSize;
+    UCHAR Interval;
+    ULONG MaximumBytesPerInterval;
+};
+
+using FnQueryPipeEx = BOOL(WINAPI*)(WINUSB_INTERFACE_HANDLE, UCHAR, UCHAR, PipeInfoEx*);
+
+FnQueryPipeEx LoadQueryPipeEx() {
+    HMODULE mod = GetModuleHandleW(L"winusb.dll");
+    if (!mod) mod = LoadLibraryW(L"winusb.dll");
+    if (!mod) return nullptr;
+    return reinterpret_cast<FnQueryPipeEx>(GetProcAddress(mod, "WinUsb_QueryPipeEx"));
+}
+
 } // namespace
+
+void DebugLog(const char* fmt, ...) {
+    static constexpr char kPrefix[] = "[BonDriver_Friio] ";
+    char buf[512];
+    std::memcpy(buf, kPrefix, sizeof(kPrefix) - 1);
+    size_t n = sizeof(kPrefix) - 1;
+    va_list ap;
+    va_start(ap, fmt);
+    const int w = std::vsnprintf(buf + n, sizeof(buf) - n - 1, fmt, ap);
+    va_end(ap);
+    if (w > 0) n += std::min(static_cast<size_t>(w), sizeof(buf) - n - 2);
+    buf[n++] = '\n';
+    buf[n] = '\0';
+    OutputDebugStringA(buf);
+}
 
 WinUsbDevice::~WinUsbDevice() {
     Close();
@@ -133,6 +171,49 @@ std::vector<std::wstring> WinUsbDevice::Enumerate(uint16_t vid, uint16_t pid) {
     return std::vector<std::wstring>(unique_paths.begin(), unique_paths.end());
 }
 
+bool WinUsbDevice::IsWinUsbBound(const std::wstring& device_path) {
+    HDEVINFO set = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+    if (set == INVALID_HANDLE_VALUE) return false;
+
+    bool bound = false;
+    SP_DEVICE_INTERFACE_DATA if_data{};
+    if_data.cbSize = sizeof(if_data);
+    if (SetupDiOpenDeviceInterfaceW(set, device_path.c_str(), 0, &if_data)) {
+        DWORD req_size = 0;
+        SetupDiGetDeviceInterfaceDetailW(set, &if_data, nullptr, 0, &req_size, nullptr);
+        if (req_size > 0) {
+            std::vector<uint8_t> detail_buf(req_size);
+            auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(detail_buf.data());
+            detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            SP_DEVINFO_DATA dev_data{};
+            dev_data.cbSize = sizeof(dev_data);
+            if (SetupDiGetDeviceInterfaceDetailW(set, &if_data, detail, req_size, nullptr, &dev_data)) {
+                wchar_t service[128]{};
+                if (SetupDiGetDeviceRegistryPropertyW(set, &dev_data, SPDRP_SERVICE, nullptr,
+                                                      reinterpret_cast<PBYTE>(service),
+                                                      sizeof(service) - sizeof(wchar_t), nullptr)) {
+                    bound = (ToLower(service) == L"winusb");
+                }
+            }
+        }
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return bound;
+}
+
+int WinUsbDevice::OpenByIndex(const std::vector<std::wstring>& paths, int device_index) {
+    Close();
+    return SelectDevice(
+        paths.size(), device_index,
+        [&](size_t i) {
+            if (Open(paths[i])) return DeviceProbe::Opened;
+            // 開けなくても WinUSB が割り当てられていれば、別のプロセスが使用中のチューナーとして数える。
+            // 複合デバイスの親（usbccgp）など WinUSB でないものは数えない。
+            return IsWinUsbBound(paths[i]) ? DeviceProbe::Busy : DeviceProbe::NotTuner;
+        },
+        [&](size_t) { Close(); });
+}
+
 bool WinUsbDevice::Open(const std::wstring& device_path) {
     Close();
     dev_handle_ = CreateFileW(
@@ -169,6 +250,48 @@ void WinUsbDevice::Close() {
 bool WinUsbDevice::SetAlternateSetting(uint8_t alt_setting) {
     if (!winusb_) return false;
     return WinUsb_SetCurrentAlternateSetting(winusb_, alt_setting) != FALSE;
+}
+
+bool WinUsbDevice::QueryDeviceSpeed(uint8_t& speed) {
+    if (!winusb_) return false;
+    UCHAR value = 0;
+    ULONG len = sizeof(value);
+    if (!WinUsb_QueryDeviceInformation(winusb_, DEVICE_SPEED, &len, &value) || len < 1) return false;
+    speed = value;
+    return true;
+}
+
+bool WinUsbDevice::QueryPipeInfo(uint8_t alt_setting, uint8_t ep, WinUsbPipeInfo& out) {
+    if (!winusb_) return false;
+    USB_INTERFACE_DESCRIPTOR if_desc{};
+    if (!WinUsb_QueryInterfaceSettings(winusb_, alt_setting, &if_desc)) return false;
+
+    static const FnQueryPipeEx query_pipe_ex = LoadQueryPipeEx();
+    for (UCHAR i = 0; i < if_desc.bNumEndpoints; ++i) {
+        PipeInfoEx info_ex{};
+        if (query_pipe_ex && query_pipe_ex(winusb_, alt_setting, i, &info_ex)) {
+            if (info_ex.PipeId != ep) continue;
+            out.pipe_type = static_cast<uint8_t>(info_ex.PipeType);
+            out.pipe_id = info_ex.PipeId;
+            out.max_packet_size = info_ex.MaximumPacketSize;
+            out.interval = info_ex.Interval;
+            out.max_bytes_per_interval = info_ex.MaximumBytesPerInterval;
+            out.from_query_pipe_ex = true;
+            return true;
+        }
+        // QueryPipeEx が無い（Win8 以前）・失敗したときは従来の QueryPipe で取る
+        WINUSB_PIPE_INFORMATION info{};
+        if (WinUsb_QueryPipe(winusb_, alt_setting, i, &info) && info.PipeId == ep) {
+            out.pipe_type = static_cast<uint8_t>(info.PipeType);
+            out.pipe_id = info.PipeId;
+            out.max_packet_size = info.MaximumPacketSize;
+            out.interval = info.Interval;
+            out.max_bytes_per_interval = 0;
+            out.from_query_pipe_ex = false;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool WinUsbDevice::ControlTransfer(uint8_t request_type, uint8_t request, uint16_t value, uint16_t index,

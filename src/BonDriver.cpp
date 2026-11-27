@@ -54,7 +54,10 @@ void BonDriverFriio::LoadIni(HMODULE module) {
     else if (m == L"u3s" || m == L"mtvu3s") cfg_.model = Model::Mtvu3s;
     else cfg_.model = Model::Auto;
 
-    cfg_.device_index = GetPrivateProfileIntW(L"FRIIO", L"DeviceIndex", 0, ini.c_str());
+    // DeviceIndex: 0 以上は指定の台に固定、-1（既定）は空きデバイス自動選択
+    wchar_t index_buf[32]{};
+    GetPrivateProfileStringW(L"FRIIO", L"DeviceIndex", L"", index_buf, 32, ini.c_str());
+    cfg_.device_index = ParseDeviceIndex(index_buf, kAutoDeviceIndex);
     cfg_.enable_b25 = GetPrivateProfileIntW(L"FRIIO", L"EnableB25", 1, ini.c_str()) != 0;
     cfg_.no_settle = GetPrivateProfileIntW(L"FRIIO", L"NoSettle", 0, ini.c_str()) != 0;
     cfg_.firmware_index = static_cast<uint16_t>(GetPrivateProfileIntW(L"FRIIO", L"FirmwareIndex", 0x5399, ini.c_str()));

@@ -10,6 +10,7 @@
 #include "Mtvu3sDevice.hpp"
 #include "SatChannelTable.hpp"
 #include "Settler.hpp"
+#include "UsbSelect.hpp"
 #include "Ut100bDevice.hpp"
 
 #include <condition_variable>
@@ -25,7 +26,7 @@ enum class Model { Auto, Ut100b, Mtvu3s };
 
 struct Config {
     Model model = Model::Auto;
-    int device_index = 0;
+    int device_index = kAutoDeviceIndex; // -1 = 空きデバイス自動選択
     bool enable_b25 = true;
     bool no_settle = false;
     std::wstring firmware_path;
