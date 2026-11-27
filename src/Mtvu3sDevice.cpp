@@ -41,18 +41,12 @@ bool Mtvu3sDevice::ReadReg(uint8_t reg, uint8_t& val) {
 
 bool Mtvu3sDevice::Open(int device_index) {
     auto paths = WinUsbDevice::Enumerate(kMtvu3sVid, kMtvu3sPid);
-    int matched = 0;
-    bool opened = false;
-    for (const auto& p : paths) {
-        if (!usb_.Open(p)) continue;
-        if (matched == device_index) {
-            opened = true;
-            break;
-        }
-        usb_.Close();
-        ++matched;
-    }
-    if (!opened) return false;
+    const int chosen = usb_.OpenByIndex(paths, device_index);
+    if (chosen < 0) return false;
+    uint8_t speed = 0;
+    const bool speed_ok = usb_.QueryDeviceSpeed(speed);
+    DebugLog("U3S: opened DeviceIndex=%d (candidate %d of %u), speed=%s", device_index, chosen,
+             static_cast<unsigned>(paths.size()), speed_ok ? UsbSpeedName(speed) : "unavailable");
     usb_.SetAlternateSetting(0);
 
     bus_ = std::make_unique<Em28178Bus>(this);
@@ -178,8 +172,23 @@ bool Mtvu3sDevice::StartStream(WinUsbDevice::ChunkCallback cb) {
     if (!usb_.SetAlternateSetting(1)) return false;
     if (!WriteReg(0x5d, 0xef)) return false;
     if (!WriteReg(0x5f, 0x89)) return false;
+    // パケットサイズは WinUsb_QueryPipeEx の MaximumBytesPerInterval から決める（取れなければ 940）
+    WinUsbPipeInfo pipe;
+    const bool pipe_ok = usb_.QueryPipeInfo(1, kIsochEp, pipe);
+    iso_packet_size_ = ChooseIsochPacketSize(pipe_ok && pipe.from_query_pipe_ex,
+                                             pipe.max_bytes_per_interval, kDefaultIsochPacketSize);
+    if (pipe_ok) {
+        DebugLog("U3S: EP 0x%02x type=%u wMaxPacketSize=%u interval=%u MaximumBytesPerInterval=%lu%s -> packet %u",
+                 pipe.pipe_id, pipe.pipe_type, pipe.max_packet_size, pipe.interval,
+                 static_cast<unsigned long>(pipe.max_bytes_per_interval),
+                 pipe.from_query_pipe_ex ? "" : " (QueryPipeEx unavailable)",
+                 static_cast<unsigned>(iso_packet_size_));
+    } else {
+        DebugLog("U3S: EP 0x%02x pipe info unavailable -> packet %u (fallback)", kIsochEp,
+                 static_cast<unsigned>(iso_packet_size_));
+    }
     // 16 URBs x 16 microframes (2 ms) = 32 ms リング
-    return usb_.StartAsyncIsochStream(0x84, 16, 940, 16, std::move(cb));
+    return usb_.StartAsyncIsochStream(kIsochEp, 16, iso_packet_size_, 16, std::move(cb));
 }
 
 void Mtvu3sDevice::StopStream() {

@@ -5,6 +5,7 @@
 #ifdef _WIN32
 
 #include "AsieStreamCipher.hpp"
+#include "UsbSelect.hpp"
 #include "WinUsbDevice.hpp"
 
 #include <cstdint>
@@ -61,6 +62,9 @@ private:
     bool CardWriteWindow(const std::vector<uint8_t>& data);
     bool CardSendBlock(const std::vector<uint8_t>& block);
     bool CardReceiveBlock(bool atr, std::vector<uint8_t>& out);
+
+    static constexpr uint8_t kBulkEp = 0x81;
+    static constexpr size_t kBulkUrbSize = 16384;
 
     WinUsbDevice usb_;
     mutable std::mutex io_mu_;

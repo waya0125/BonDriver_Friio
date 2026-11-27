@@ -19,6 +19,7 @@ add_library(friio_core STATIC
     src/B25Decoder.cpp
     src/Mtvu3sCardReader.cpp
     src/SatChannelTable.cpp
+    src/UsbSelect.cpp
 )
 target_include_directories(friio_core PUBLIC src include)
 
